@@ -20,6 +20,28 @@ bun src/main.ts "initial prompt" # start with a prompt
 bun src/main.ts -p "review this" # print mode (no TUI, like `agent -p`)
 ```
 
+### Install it as a command
+
+Like `opencode`, it runs against whatever directory you're in — that directory
+becomes the agent's workspace. Drop a wrapper on your PATH:
+
+```bash
+# ~/.local/bin/ctui
+#!/usr/bin/env bash
+set -euo pipefail
+exec /home/you/.bun/bin/bun /path/to/new-tui/src/main.ts "$@"
+```
+
+```bash
+chmod +x ~/.local/bin/ctui
+ctui                  # workspace = current directory
+ctui --workspace /tmp # explicit workspace
+ctui -p "review this" # print mode
+```
+
+The wrapper deliberately does *not* take the name `opencode` — that would
+shadow the real opencode CLI.
+
 Flags: `--mode plan|ask`, `--plan`, `--continue`/`-c`, `--resume <id>`,
 `--model <provider/model>`, `--workspace <dir>`, `--trust` (accepted, no-op).
 
