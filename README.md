@@ -3,15 +3,16 @@
 Cursor CLI look. OpenCode engine underneath.
 
 A Bun + TypeScript TUI that pixel-matches `cursor-agent`'s interactive terminal
-(header, `▄`/`▀` input box, `Auto` + cwd lines, `?` hints, `/` command popup)
-but talks to the **opencode v2 background service** (`opencode2`, API
-`2.0.8`) via `@opencode/client` — sessions, streaming, models, agents,
-permissions, MCP.
+(header, flat grey input box, friendly model label + context %, `?` hints,
+`/` command popup) but talks to the **opencode v2 background service**
+(`opencode2`, API `2.0.8`) via `@opencode/client` — sessions, streaming,
+models, agents, permissions, MCP.
 
 ## Run
 
 ```bash
-cd /home/zeroij/new-tui
+git clone https://github.com/ZeroiJ/new-tui.git
+cd new-tui
 bun install
 bun src/main.ts                  # interactive TUI in current dir
 bun src/main.ts --workspace /tmp # choose workspace
@@ -32,18 +33,34 @@ opencode2 service status  # must print a http://127.0.0.1:... URL
 ## Looks like cursor-agent (verified side-by-side via tmux captures)
 
 ```
-  Cursor Agent
-  v2026.09.18-cursor-look
+  Opencode
+  v2.0.15
   Tip: Type ? in the prompt bar to show in-app hints.
 
   → Plan, search, build anything
-  Auto
+  Space Bunny Free · 1.1%
   ~/new-tui
 ```
 
-Top-anchored flow, blended `▄`/`▀` box edges, visible block cursor parked in
-the box, `~`-shortened cwd, no footer by default (only transient
-permission/status), reasoning hidden from the transcript.
+Top-anchored flow, flat plain-grey input box (no `▄`/`▀` bars), visible block
+cursor parked in the box, `~`-shortened cwd, no footer by default (only
+transient permission/status), reasoning hidden from the transcript.
+
+## Micro-interactions (cursor-style)
+
+| Feature | What you see |
+|---|---|
+| Thread line | dim `│` from the prompt block down the turn, closing with `└` |
+| Prompt block | full-bleed filled block (`rgb(36,36,40)`) instead of a `●` bullet |
+| Tool timer | `$ cmd  90ms → 4s → 1m35s`, frozen when the call ends |
+| Collapsible output | `… 6 output lines hidden · ctrl+o to expand` + last 2 lines; **ctrl+o** toggles |
+| Status line | green spinner + bold `Running` + dim eased token count |
+| Box hints | right-aligned `ctrl+c to stop` while streaming; placeholder becomes `Add a follow-up` after the first turn |
+| Context % | `Space Bunny Free · 1.1%` from the newest assistant message's `input + cache.read` over `ModelInfo.limit.context` |
+| Inline code | `` `git status` `` tinted `rgb(168,181,230)`, backticks stripped |
+| Completion stamp | `✓ done in 7.6s · 389 tokens`, fades after ~3s |
+| Token tick-up | the count eases up to its real value instead of jumping |
+| Streaming cursor | inverse block at the end of live text |
 
 ## Keys
 
@@ -59,6 +76,8 @@ permission/status), reasoning hidden from the transcript.
 | Esc | close popup / interrupt streaming |
 | Ctrl+L | clear screen |
 | Ctrl+G | edit input in `$EDITOR` |
+| Ctrl+O | expand/collapse tool output |
+| Ctrl+R | review working-tree changes (diff overlay) |
 | Ctrl+C (streaming) | interrupt opencode turn |
 | Ctrl+C ×2 (empty) | quit |
 | ↑/↓ | history / popup navigation |
