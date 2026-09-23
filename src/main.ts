@@ -119,6 +119,10 @@ async function main() {
         return { label: String(m["name"] ?? id), value: `${provider}/${id}` };
       }).filter((m) => m.value !== "/");
     } catch { /* picker shows empty */ }
+    // pending task count (shown under the box when > 0)
+    try {
+      s.taskCount = (await BE.inboxList(sessionID)).length;
+    } catch { /* leave 0 */ }
     s.statusMsg = "";
   } catch (e) {
     s.statusMsg = "";
@@ -178,6 +182,16 @@ async function main() {
 
   async function handleKey(key: Key) {
     ctrlCCount = key.kind === "ctrl" && key.key === "c" ? ctrlCCount + 1 : 0;
+
+    // diff overlay: ↑/↓ scroll (pg-up/down too), esc/ctrl+r closes
+    if (s.diffOpen) {
+      const room = Math.max(3, s.rows - 4);
+      if (key.kind === "up") { s.diffScroll = Math.max(0, s.diffScroll - 1); redraw(); return; }
+      if (key.kind === "down") { s.diffScroll = Math.min(Math.max(0, s.diffLines.length - room), s.diffScroll + 1); redraw(); return; }
+      if (key.kind === "esc" || (key.kind === "ctrl" && key.key === "r")) { s.diffOpen = false; redraw(); return; }
+      if (key.kind === "enter") { s.diffScroll = Math.min(Math.max(0, s.diffLines.length - room), s.diffScroll + room); redraw(); return; }
+      return; // swallow other keys while reviewing
+    }
 
     // permission overlay: cursor menu keys — y once, tab allowlist, shift+tab run-everything, esc/n reject
     if (s.permission) {
@@ -253,6 +267,24 @@ async function main() {
       }
       if (key.key === "l") { s.transcript = []; s.statusMsg = "screen cleared"; redraw(); return; }
       if (key.key === "g") { await openEditor(s); redraw(); return; }
+      if (key.key === "r") {
+        // ctrl+r — review changed files (vcs.diff overlay)
+        try {
+          const diffs = await BE.vcsDiff(s.cwd);
+          const lines: string[] = [];
+          for (const d of diffs) {
+            lines.push(`${d.file}  (${d.status} +${d.additions} -${d.deletions})`);
+            for (const pl of d.patch.split("\n")) lines.push(pl);
+            lines.push("");
+          }
+          s.diffLines = lines;
+          s.diffScroll = 0;
+          s.diffOpen = true;
+        } catch (e) {
+          s.statusMsg = `diff failed: ${String(e)}`;
+        }
+        redraw(); return;
+      }
       if (key.key === "u") { s.input = ""; s.cursor = 0; updateSlash(); redraw(); return; }
       if (key.key === "d" && s.input.length === 0) { clearInterval(tick); clearInterval(tipTimer); cleanup(); process.exit(0); }
       redraw(); return;
@@ -824,6 +856,13 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
         } else if (type === "session.status") {
           const st = String((props["status"] as Record<string, unknown> | undefined)?.["type"] ?? "");
           if (st === "busy") { s.streaming = true; if (s.phase === "idle") s.phase = "working"; redraw(); }
+        } else if (type.startsWith("session.inbox.")) {
+          // task counter: refresh pending inbox count (9b)
+          try {
+            const items = await BE.inboxList(getSession());
+            s.taskCount = items.length;
+            redraw();
+          } catch { /* ignore */ }
         }
       }
       clearTimeout(timer);

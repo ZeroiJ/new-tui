@@ -148,6 +148,12 @@ export interface UIState {
   toolLineById: Map<string, number>;
   /** tool-call id → tool name (refreshed from message polls) */
   toolNameById: Map<string, string>;
+  /** ctrl+r diff overlay */
+  diffOpen: boolean;
+  diffLines: string[];
+  diffScroll: number;
+  /** pending inbox tasks (shown under box when > 0) */
+  taskCount: number;
 }
 
 export function createState(cwd: string, version: string): UIState {
@@ -183,6 +189,10 @@ export function createState(cwd: string, version: string): UIState {
     seenOrdinals: new Map(),
     toolLineById: new Map(),
     toolNameById: new Map(),
+    diffOpen: false,
+    diffLines: [],
+    diffScroll: 0,
+    taskCount: 0,
   };
 }
 
@@ -191,6 +201,24 @@ const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", 
 export function render(s: UIState): string {
   const W = s.cols;
   const boxW = Math.max(20, W - 2);
+
+  // ctrl+r diff overlay — full-screen review of working-tree changes.
+  if (s.diffOpen) {
+    const out: string[] = [ANSI.clear, `  ${bold("Changed files")} ${dim("(↑/↓ scroll, esc close)")}`, ""];
+    const room = Math.max(3, s.rows - 4);
+    const maxScroll = Math.max(0, s.diffLines.length - room);
+    const scroll = Math.min(s.diffScroll, maxScroll);
+    for (const ln of s.diffLines.slice(scroll, scroll + room)) {
+      const c = ln.startsWith("+") ? `\x1b[32m${ln}${ANSI.reset}`
+        : ln.startsWith("-") ? `\x1b[31m${ln}${ANSI.reset}`
+        : ln.startsWith("@@") ? `\x1b[36m${ln}${ANSI.reset}`
+        : ln.startsWith(" ") ? dim(ln)
+        : ln;
+      out.push("  " + (c.length > W ? c.slice(0, W) : c));
+    }
+    if (s.diffLines.length === 0) out.push(dim("  (no changes)"));
+    return out.join("\n");
+  }
 
   // Header — flush to top, rebranded: Opencode + real service version.
   const head: string[] = [];
@@ -302,6 +330,7 @@ export function render(s: UIState): string {
     s.mode === "agent" ? s.modelLabel : s.mode === "plan" ? `Plan · ${s.modelLabel}` : `Ask · ${s.modelLabel}`;
   tail.push(`  ${dim(modelLine)}`);
   tail.push(`  ${dim(shortCwd(s.cwd))}`);
+  if (s.taskCount > 0) tail.push(dim(`  ${s.taskCount} task${s.taskCount === 1 ? "" : "s"}`));
 
   // Permission overlay — cursor-agent's menu (divider, context, question, arrow menu).
   if (s.permission) {
@@ -397,6 +426,7 @@ export function* splitKeys(data: string): Generator<Key> {
     if (ch === "\x15") { i++; yield { kind: "ctrl", key: "u" }; continue; }
     if (ch === "\x0b") { i++; yield { kind: "ctrl", key: "k" }; continue; }
     if (ch === "\x04") { i++; yield { kind: "ctrl", key: "d" }; continue; }
+    if (ch === "\x12") { i++; yield { kind: "ctrl", key: "r" }; continue; }
     i++;
     yield { kind: "char", ch };
   }

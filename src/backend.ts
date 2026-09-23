@@ -174,6 +174,30 @@ export async function interruptSession(sessionID: string) {
   await cl.session.interrupt({ sessionID });
 }
 
+export interface FileDiff {
+  file: string;
+  patch: string;
+  additions: number;
+  deletions: number;
+  status: "added" | "deleted" | "modified";
+}
+
+export async function vcsDiff(directory: string): Promise<FileDiff[]> {
+  const cl = (await getClient()) as unknown as {
+    vcs: { diff: (o: unknown) => Promise<{ data?: FileDiff[] } | FileDiff[]> };
+  };
+  const r = await cl.vcs.diff({ location: { directory }, mode: "working" });
+  const arr = Array.isArray(r) ? r : (r?.data ?? []);
+  return arr;
+}
+
+export async function inboxList(sessionID: string): Promise<unknown[]> {
+  const cl = (await getClient()) as unknown as {
+    session: { inbox: { list: (o: unknown) => Promise<unknown[]> } };
+  };
+  return await cl.session.inbox.list({ sessionID });
+}
+
 export async function compactSession(sessionID: string) {
   const cl = await c();
   await cl.session.compact({ sessionID });
