@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { ANSI, commandList, createState, render, splitKeys, type Key, type UIState } from "./ui";
+import { SPINNERS } from "./spinners";
 import * as BE from "./backend";
 
 const TUI_VERSION = "0.2.0";
@@ -151,7 +152,10 @@ async function main() {
 
   // spinner tick — also drives the token tick-up, stamp expiry, and tool timers
   const tick = setInterval(() => {
-    s.spinner++;
+    // thinking animation runs off a wall clock so each design keeps its own
+    // cycle time regardless of redraw jitter
+    if (s.streaming && s.spinStart == null) s.spinStart = Date.now();
+    if (!s.streaming) s.spinStart = null;
     let need = s.streaming || !!s.statusMsg || s.stamp != null;
     if (s.stamp && Date.now() >= s.stamp.until) { s.stamp = null; need = true; }
     if (s.tokenDisplay !== s.turnTokens) {
@@ -594,6 +598,22 @@ async function handleSlash(s: UIState, sessionID: string, t: string, ctx: { auto
       s.transcript.push({ role: "system", text: `Durable goal started: ${arg || "(no objective)"} — continuing while idle (local emulation).` });
       if (arg) await submit(s, sessionID, `[GOAL - continue until done, working autonomously]\n${arg}`);
       return null;
+    case "/spinner": {
+      if (!arg) {
+        const list = SPINNERS.map((x) => `${x.name.padEnd(15)} ${x.label}  ${x.cycleMs}ms`).join("\n");
+        s.transcript.push({ role: "assistant", text: `Thinking animations (loading.dev):\n${list}\n\nUse /spinner <name>. Current: ${s.spinnerName}` });
+        return null;
+      }
+      const hit = SPINNERS.find((x) => x.name === arg);
+      if (!hit) {
+        s.transcript.push({ role: "error", text: `Unknown spinner "${arg}". Try: ${SPINNERS.map((x) => x.name).join(", ")}` });
+        return null;
+      }
+      s.spinnerName = hit.name;
+      s.spinStart = s.streaming ? Date.now() : null;
+      s.transcript.push({ role: "system", text: `Spinner → ${hit.name} (${hit.label})` });
+      return null;
+    }
     case "/diff": {
       try {
         const proc = Bun.spawn(["git", "diff", "--stat"], { cwd: s.cwd, stdout: "pipe", stderr: "pipe" });
@@ -740,8 +760,6 @@ async function submit(s: UIState, sessionID: string, text: string, opts?: { file
       const sig = merge(msgs);
       if (sig === lastSig) quiet++;
       else { quiet = 0; lastSig = sig; }
-      // still streaming indicator
-      s.spinner++;
       // Settle = quiet AND we actually rendered a response. Stable signature
       // with only our own echo means "no response yet", not "done".
       if (renderedIds.size > 0 && quiet >= 2) break; // ~3s with no new content = settled

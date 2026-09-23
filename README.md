@@ -62,6 +62,29 @@ transient permission/status), reasoning hidden from the transcript.
 | Token tick-up | the count eases up to its real value instead of jumping |
 | Streaming cursor | inverse block at the end of live text |
 
+## Thinking animations
+
+The status line's thinking indicator is a set of terminal ports of the
+[loading.dev](https://loading.dev) designs (MIT © Jakub Krehel & Paul
+Faivret). The originals are React + CSS-keyframe SVG components, so these are
+re-implementations of the same motion — same cycle durations from their
+`SPINNER_MOTION` table, drawn as single-line cell animations.
+
+`/spinner` lists them, `/spinner <name>` switches:
+
+| Name | Cycle | Look |
+|---|---|---|
+| `linear-dots` *(default)* | 900ms | three dots fading in sequence |
+| `wave` | 900ms | five bars rising and falling |
+| `bouncing-dots` | 500ms | staggered bounce |
+| `leap` | 1800ms | the last dot leaps to the front |
+| `classic` | 1200ms | quadrants stepping with a fading trail |
+| `circular-dots` | 800ms | the brightest dot hops the ring |
+| `morph` | 1200ms | a square rounding into a circle |
+| `ripple` | 1200ms | a dot rippling outward |
+| `swirl` | 1200ms | a bright cell chasing its trail |
+| `cursor` | 1200ms | the original cursor-agent braille spinner |
+
 ## Keys
 
 | Key | Action |
@@ -86,7 +109,13 @@ transient permission/status), reasoning hidden from the transcript.
 
 `/model`, `/agent`, `/plan`, `/ask`, `/compact`, `/fork`, `/new`, `/ls`,
 `/resume`, `/clear`, `/goal`, `/add-dir`, `/mcp`, `/sandbox`,
-`/run-everything` (auto-approve toggle), `/auto-review`, `/diff`, `/help`, `/quit`
+`/run-everything` (auto-approve toggle), `/auto-review`, `/spinner`,
+`/diff`, `/help`, `/quit`
+
+Commands opencode itself provides (built-in and project
+`.opencode/command/*.md`) are listed first and run server-side through
+`session.command`; this TUI's own commands follow as extras. The list
+refreshes live on the `command.updated` event.
 
 Permission prompts: `[a]` allow once, `[A]` always, `[d]` reject.
 `/run-everything` auto-allows them.

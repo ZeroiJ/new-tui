@@ -1,5 +1,7 @@
+import { DEFAULT_SPINNER, frameFor } from "./spinners";
+
 // Minimal raw-ANSI Cursor-style renderer + input state.
-// No external TUI dep: full control over ▄/▀ input box.
+// No external TUI dep: full control over the input box.
 
 export const ANSI = {
   reset: "\x1b[0m",
@@ -71,6 +73,7 @@ export const SLASH_COMMANDS: SlashCmd[] = [
   { name: "/sandbox", desc: "Toggle sandbox info" },
   { name: "/run-everything", desc: "Toggle Run Everything" },
   { name: "/auto-review", desc: "Auto-review status" },
+  { name: "/spinner", desc: "Pick the thinking animation (/spinner <name>)" },
   { name: "/diff", desc: "Show session diff" },
   { name: "/help", desc: "Show help" },
   { name: "/quit", desc: "Quit (Ctrl+C twice)" },
@@ -162,7 +165,10 @@ export interface UIState {
   modelOpen: boolean;
   modelIndex: number;
   streaming: boolean;
-  spinner: number;
+  /** which loading.dev-style thinking animation to play */
+  spinnerName: string;
+  /** ms timestamp when the current spin started (null = not spinning) */
+  spinStart: number | null;
   statusMsg: string;
   scrollOffset: number;
   permission: PermissionState | null;
@@ -225,7 +231,8 @@ export function createState(cwd: string, version: string): UIState {
     modelOpen: false,
     modelIndex: 0,
     streaming: false,
-    spinner: 0,
+    spinnerName: DEFAULT_SPINNER,
+    spinStart: null,
     statusMsg: "",
     scrollOffset: 0,
     permission: null,
@@ -251,8 +258,6 @@ export function createState(cwd: string, version: string): UIState {
     contextPct: null,
   };
 }
-
-const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 // Full-bleed user-prompt block: dark charcoal fill (cursor-agent's prompt echo).
 function userBlockRow(s: string, W: number): string {
@@ -432,7 +437,8 @@ export function render(s: UIState): string {
   if (s.streaming) {
     const label = s.phase === "working" ? "Working" : "Running";
     const tok = label === "Running" && s.tokenDisplay > 0 ? dim(`  ${s.tokenDisplay.toLocaleString("en-US")} tokens`) : "";
-    tail.push(`  \x1b[32m${SPINNER[s.spinner % SPINNER.length]}\x1b[39m ${bold(label)}${tok}`);
+    const spin = frameFor(s.spinnerName, s.spinStart != null ? now - s.spinStart : 0);
+    tail.push(`  ${spin} ${bold(label)}${tok}`);
   } else if (s.stamp && now < s.stamp.until) {
     const dur = s.stamp.durMs < 60_000 ? `${(s.stamp.durMs / 1000).toFixed(1)}s` : fmtDur(s.stamp.durMs);
     const tok = s.stamp.tokens > 0 ? dim(` · ${s.stamp.tokens.toLocaleString("en-US")} tokens`) : "";
