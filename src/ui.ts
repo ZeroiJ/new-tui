@@ -69,7 +69,7 @@ export const SLASH_COMMANDS: SlashCmd[] = [
 
 export const TIPS = [
   "Tip: Type ? in the prompt bar to show in-app hints.",
-  "Tip: Use /mcp to connect Cursor to your tools and data sources.",
+  "Tip: Use /model to switch models mid-session.",
   "Tip: Shift+Tab switches Agent / Plan / Ask.",
   "Tip: ! runs shell, @ attaches files, & moves to cloud.",
   "Tip: Powered by opencode underneath (opencode2 service API).",
@@ -151,9 +151,9 @@ export function render(s: UIState): string {
   const W = s.cols;
   const boxW = Math.max(20, W - 2);
 
-  // Header — flush to top like cursor-agent (no leading blank line).
+  // Header — flush to top, rebranded: Opencode + real service version.
   const head: string[] = [];
-  head.push("  Cursor Agent");
+  head.push("  Opencode");
   head.push(`  ${dim(`v${s.version}`)}`);
   head.push(`  ${dim(TIPS[s.tipIndex % TIPS.length])}`);
   head.push("");
@@ -223,7 +223,9 @@ export function render(s: UIState): string {
     }
   });
   if (remaining !== -1) { cursorLine = lines.length - 1; cursorColInLine = lines[lines.length - 1]?.length ?? 0; }
-  tail.push(`  ${dim(s.mode === "agent" ? s.modelLabel : s.mode === "plan" ? "Plan" : "Ask")}`);
+  const modelLine =
+    s.mode === "agent" ? s.modelLabel : s.mode === "plan" ? `Plan · ${s.modelLabel}` : `Ask · ${s.modelLabel}`;
+  tail.push(`  ${dim(modelLine)}`);
   tail.push(`  ${dim(shortCwd(s.cwd))}`);
 
   // Footer: cursor-agent shows nothing here by default — only transient state.

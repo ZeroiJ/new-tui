@@ -2,8 +2,7 @@
 import { ANSI, createState, render, splitKeys, SLASH_COMMANDS, type Key, type UIState } from "./ui";
 import * as BE from "./backend";
 
-const VERSION = "0.1.0-opencode";
-const CURSOR_VERSION_LABEL = "2026.09.18-cursor-look";
+const TUI_VERSION = "0.2.0";
 
 interface Args {
   prompt: string;
@@ -71,7 +70,7 @@ async function main() {
   }
 
   const cwd = args.workspace;
-  const s: UIState = createState(cwd, CURSOR_VERSION_LABEL);
+  const s: UIState = createState(cwd, "…"); // version filled from server info below
   if (args.mode) s.mode = args.mode;
   if (args.model) s.modelLabel = args.model;
 
@@ -89,6 +88,8 @@ async function main() {
     s.statusMsg = "connecting to opencode service…";
     draw(s);
     await BE.getClient();
+    const info = await BE.getServerInfo();
+    s.version = info?.version ?? "unknown";
     const sessions = await BE.listSessions();
     if (args.resume) sessionID = args.resume;
     else if (args.cont && sessions.length > 0) sessionID = String((sessions[0] as Record<string, unknown>)["id"]);
@@ -103,11 +104,12 @@ async function main() {
         s.transcript.push({ role: m.role.startsWith("user") ? "user" : m.role.includes("tool") ? "tool" : "assistant", text: m.text });
       }
     } catch { /* ignore */ }
-    // agents/models for labels
+    // resolve real model label for this session (friendly name)
     try {
-      const agents = await BE.listAgents();
-      void agents;
-    } catch { /* ignore */ }
+      const sess = await BE.getSession(sessionID);
+      const mref = sess["model"] as { providerID: string; id: string } | undefined;
+      s.modelLabel = mref ? await BE.friendlyModelName(mref) : await BE.getDefaultModelName();
+    } catch { /* keep default */ }
     s.statusMsg = "";
   } catch (e) {
     s.statusMsg = "";
@@ -412,11 +414,28 @@ async function handleSlash(s: UIState, sessionID: string, t: string, ctx: { auto
     case "/model": {
       const models = await BE.listModels();
       if (!arg) {
-        const names = models.slice(0, 20).map((m) => String((m as Record<string, unknown>)["id"] ?? JSON.stringify(m))).join("\n");
-        s.transcript.push({ role: "assistant", text: `Models (opencode):\n${names || "(none listed)"}\n\nUse /model <provider/model> to switch.` });
+        const names = models
+          .map((m) => `${String(m["name"] ?? m["id"])}  (${String(m["providerID"] ?? m["provider"] ?? "")}/${String(m["id"])})`)
+          .slice(0, 20);
+        s.transcript.push({ role: "assistant", text: `Models (opencode):\n${names.join("\n") || "(none listed)"}\n\nUse /model <provider/model> to switch.` });
       } else {
-        s.modelLabel = arg;
-        s.transcript.push({ role: "system", text: `Model → ${arg} (applies to next prompt)` });
+        // resolve friendly name + switch the session's model server-side
+        const hit = models.find(
+          (m) =>
+            String(m["id"]) === arg ||
+            `${String(m["providerID"] ?? m["provider"])}/${String(m["id"])}` === arg ||
+            String(m["name"] ?? "").toLowerCase() === arg.toLowerCase(),
+        );
+        const providerID = String(hit?.["providerID"] ?? hit?.["provider"] ?? (arg.includes("/") ? arg.split("/")[0] : "opencode"));
+        const id = String(hit?.["id"] ?? (arg.includes("/") ? arg.split("/").slice(1).join("/") : arg));
+        const friendly = String(hit?.["name"] ?? id);
+        try {
+          await BE.switchModel(sessionID, { providerID, id });
+          s.modelLabel = friendly;
+          s.transcript.push({ role: "system", text: `Model → ${friendly}` });
+        } catch (e) {
+          s.transcript.push({ role: "error", text: `switchModel failed: ${String(e)}` });
+        }
       }
       return null;
     }

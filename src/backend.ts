@@ -21,6 +21,48 @@ export function getServerUrl(): string {
   return _endpoint?.url ?? "";
 }
 
+type ServerInfoFn = { server: { info: (o?: unknown) => Promise<{ version: string }> } };
+
+export async function getServerInfo(): Promise<{ version?: string } | null> {
+  try {
+    const cl = (await getClient()) as unknown as ServerInfoFn;
+    return await cl.server.info();
+  } catch {
+    return null;
+  }
+}
+
+/** Friendly display name for a model ref, e.g. "MiMo-V2.6-Flash Free". */
+export async function friendlyModelName(ref: { providerID: string; id: string } | null | undefined): Promise<string> {
+  if (!ref) return "Auto";
+  try {
+    const models = await listModels();
+    const hit = models.find(
+      (m) => String(m["id"]) === ref.id && String(m["providerID"] ?? m["provider"]) === ref.providerID,
+    );
+    if (hit) return String(hit["name"] ?? hit["modelID"] ?? hit["id"]);
+  } catch { /* fall through */ }
+  return `${ref.providerID}/${ref.id}`;
+}
+
+export async function getDefaultModelName(): Promise<string> {
+  try {
+    const cl = (await getClient()) as unknown as { model: { default: (o?: unknown) => Promise<unknown> } };
+    const raw = (await cl.model.default()) as { data?: { name?: string; modelID?: string; id?: string } | null } | { name?: string } | null;
+    const d = ("data" in (raw ?? {}) ? (raw as { data?: unknown }).data : raw) as
+      | { name?: string; modelID?: string; id?: string }
+      | null
+      | undefined;
+    if (d) return String(d.name ?? d.modelID ?? d.id ?? "Auto");
+  } catch { /* fall through */ }
+  return "Auto";
+}
+
+export async function switchModel(sessionID: string, model: { providerID: string; id: string; variant?: string }) {
+  const cl = (await c()) as unknown as { session: { switchModel: (o: unknown) => Promise<unknown> } };
+  await cl.session.switchModel({ sessionID, model });
+}
+
 export interface Msg {
   id: string;
   role: string;
