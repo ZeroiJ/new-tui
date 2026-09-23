@@ -140,7 +140,9 @@ type AnyClient = {
     interrupt: (o: unknown) => Promise<unknown>;
     compact: (o: unknown) => Promise<unknown>;
     fork: (o: unknown) => Promise<unknown>;
+    command: (o: unknown) => Promise<unknown>;
   };
+  command: { list: (o?: unknown) => Promise<unknown> };
   message: { list: (o: unknown) => Promise<unknown> };
   model: { list: (o?: unknown) => Promise<unknown> };
   agent: { list: (o?: unknown) => Promise<unknown> };
@@ -285,6 +287,31 @@ export async function listAgents() {
   } catch {
     return [];
   }
+}
+
+export interface OcCommand {
+  name: string;
+  description?: string;
+}
+
+/** opencode's own commands (built-in + project `.opencode/command` markdown). */
+export async function listCommands(directory?: string): Promise<OcCommand[]> {
+  const cl = await c();
+  try {
+    const r = await cl.command.list(directory ? { location: { directory } } : undefined);
+    const arr = (Array.isArray(r) ? r : ((r as { data?: Array<Record<string, unknown>> } | null)?.data ?? [])) as Array<Record<string, unknown>>;
+    return arr
+      .map((c) => ({ name: String(c["name"] ?? ""), description: c["description"] ? String(c["description"]) : undefined }))
+      .filter((c) => c.name !== "");
+  } catch {
+    return [];
+  }
+}
+
+/** Execute an opencode command — runs server-side like a prompt, so it streams. */
+export async function runCommand(sessionID: string, name: string, text: string) {
+  const cl = await c();
+  await cl.session.command({ sessionID, name, text });
 }
 
 export async function listMcp() {

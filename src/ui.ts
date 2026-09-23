@@ -50,6 +50,8 @@ export interface TranscriptItem {
 export interface SlashCmd {
   name: string;
   desc: string;
+  /** "opencode" = served by opencode's own command list, "local" = this TUI */
+  source?: "opencode" | "local";
 }
 
 export const SLASH_COMMANDS: SlashCmd[] = [
@@ -73,6 +75,34 @@ export const SLASH_COMMANDS: SlashCmd[] = [
   { name: "/help", desc: "Show help" },
   { name: "/quit", desc: "Quit (Ctrl+C twice)" },
 ];
+
+/**
+ * opencode's commands are the source of truth; this TUI's local commands
+ * follow as extras, minus any name opencode already provides.
+ */
+export function commandList(s: Pick<UIState, "ocCommands">): SlashCmd[] {
+  const seen = new Set<string>();
+  const out: SlashCmd[] = [];
+  for (const c of s.ocCommands) {
+    const name = c.name.startsWith("/") ? c.name : "/" + c.name;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push({ name, desc: c.desc, source: "opencode" });
+  }
+  for (const c of SLASH_COMMANDS) {
+    if (seen.has(c.name)) continue;
+    seen.add(c.name);
+    out.push({ name: c.name, desc: c.desc, source: "local" });
+  }
+  return out;
+}
+
+/** Keep the selected row visible in a scrolling popup window. */
+export function popupWindow<T>(items: T[], index: number, max: number): { start: number; visible: T[] } {
+  const maxStart = Math.max(0, items.length - max);
+  const start = Math.max(0, Math.min(maxStart, index - Math.floor((max - 1) / 2)));
+  return { start, visible: items.slice(start, start + max) };
+}
 
 export const TIPS = [
   "Tip: Type ? in the prompt bar to show in-app hints.",
@@ -163,6 +193,8 @@ export interface UIState {
   taskCount: number;
   /** true once a turn has been submitted — swaps the box placeholder */
   followUp: boolean;
+  /** opencode's own commands, fetched via command.list (refreshed on command.updated) */
+  ocCommands: SlashCmd[];
   /** ctrl+o — expand collapsed tool output */
   outputExpanded: boolean;
   /** completion stamp shown for ~3s after a turn settles */
@@ -212,6 +244,7 @@ export function createState(cwd: string, version: string): UIState {
     diffScroll: 0,
     taskCount: 0,
     followUp: false,
+    ocCommands: [],
     outputExpanded: false,
     stamp: null,
     contextLimit: 0,
@@ -344,37 +377,42 @@ export function render(s: UIState): string {
   // Model picker (cursor-style): header + two-column rows, ↑/↓ navigate.
   if (s.modelOpen) {
     const q = (s.input.startsWith("/model ") ? s.input.slice(7) : "").toLowerCase();
-    const matches = s.modelItems
-      .filter((m) => !q || m.label.toLowerCase().includes(q) || m.value.toLowerCase().includes(q))
-      .slice(0, 8);
+    const all = s.modelItems
+      .filter((m) => !q || m.label.toLowerCase().includes(q) || m.value.toLowerCase().includes(q));
+    const MAX = 8;
     const NAME_W = 34;
     tail.push(dim(`   /model [${q}]  Select model (Tab to edit, Enter to pick)`));
-    if (matches.length === 0) tail.push(dim("   (no matching models)"));
-    matches.forEach((m, i) => {
-      const arrow = i === s.modelIndex ? "→" : " ";
+    if (all.length === 0) tail.push(dim("   (no matching models)"));
+    const { start, visible } = popupWindow(all, s.modelIndex, MAX);
+    if (start > 0) tail.push(dim(`   ↑ ${start} more above`));
+    visible.forEach((m, i) => {
+      const idx = start + i;
+      const arrow = idx === s.modelIndex ? "→" : " ";
       const name = m.label.padEnd(NAME_W);
-      tail.push(i === s.modelIndex
+      tail.push(idx === s.modelIndex
         ? `   ${arrow} ${bold(name)} ${dim(m.value)}`
         : dim(`   ${arrow} ${name} ${m.value}`));
     });
-    if (s.modelItems.filter((m) => !q || m.label.toLowerCase().includes(q) || m.value.toLowerCase().includes(q)).length > 8) {
-      tail.push(dim("   ↓ more below"));
-    }
+    if (start + MAX < all.length) tail.push(dim(`   ↓ ${all.length - start - MAX} more below`));
   }
 
   if (s.slashOpen && !s.modelOpen) {
     const q = s.slashFilter.toLowerCase();
-    const matches = SLASH_COMMANDS.filter((c) => c.name.toLowerCase().startsWith(q || "/")).slice(0, 8);
+    const all = commandList(s).filter((c) => c.name.toLowerCase().startsWith(q || "/"));
+    const MAX = 8;
     const NAME_W = 30;
-    if (matches.length === 0) tail.push(dim("   (no matching commands)"));
-    matches.forEach((c, i) => {
-      const arrow = i === s.slashIndex ? "→" : " ";
+    if (all.length === 0) tail.push(dim("   (no matching commands)"));
+    const { start, visible } = popupWindow(all, s.slashIndex, MAX);
+    if (start > 0) tail.push(dim(`   ↑ ${start} more above`));
+    visible.forEach((c, i) => {
+      const idx = start + i;
+      const arrow = idx === s.slashIndex ? "→" : " ";
       const name = c.name.padEnd(NAME_W);
-      tail.push(i === s.slashIndex
+      tail.push(idx === s.slashIndex
         ? `   ${arrow} ${bold(name)} ${dim(c.desc)}`
         : dim(`   ${arrow} ${name} ${c.desc}`));
     });
-    if (matches.length >= 8) tail.push(dim("   ↓ more below"));
+    if (start + MAX < all.length) tail.push(dim(`   ↓ ${all.length - start - MAX} more below`));
   }
 
   if (s.hintsOpen) {

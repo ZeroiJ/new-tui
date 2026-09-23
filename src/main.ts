@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { ANSI, createState, render, splitKeys, SLASH_COMMANDS, type Key, type UIState } from "./ui";
+import { ANSI, commandList, createState, render, splitKeys, type Key, type UIState } from "./ui";
 import * as BE from "./backend";
 
 const TUI_VERSION = "0.2.0";
@@ -126,6 +126,8 @@ async function main() {
     try {
       s.taskCount = (await BE.inboxList(sessionID)).length;
     } catch { /* leave 0 */ }
+    // opencode's own slash commands (built-in + project markdown commands)
+    s.ocCommands = (await BE.listCommands(cwd)).map((c) => ({ name: "/" + c.name, desc: c.description ?? "" }));
     s.statusMsg = "";
   } catch (e) {
     s.statusMsg = "";
@@ -186,7 +188,7 @@ async function main() {
       s.slashOpen = true;
       const space = s.input.indexOf(" ");
       s.slashFilter = (space === -1 ? s.input : s.input.slice(0, space)).trim() || "/";
-      const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(s.slashFilter || "/"));
+      const matches = commandList(s).filter((c) => c.name.startsWith(s.slashFilter || "/"));
       s.slashIndex = Math.min(s.slashIndex, Math.max(0, matches.length - 1));
     } else s.slashOpen = false;
   }
@@ -317,7 +319,7 @@ async function main() {
       }
       // Tab: complete slash
       if (s.slashOpen) {
-        const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(s.slashFilter || "/"));
+        const matches = commandList(s).filter((c) => c.name.startsWith(s.slashFilter || "/"));
         const m = matches[s.slashIndex];
         if (m) { s.input = m.name + " "; s.cursor = s.input.length; updateSlash(); redraw(); }
         return;
@@ -331,7 +333,7 @@ async function main() {
     }
     if (key.kind === "down") {
       if (s.slashOpen) {
-        const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(s.slashFilter || "/"));
+        const matches = commandList(s).filter((c) => c.name.startsWith(s.slashFilter || "/"));
         s.slashIndex = Math.min(matches.length - 1, s.slashIndex + 1); redraw(); return;
       }
       if (histIdx > 0) { histIdx--; s.input = history[history.length - 1 - histIdx] ?? ""; }
@@ -346,7 +348,7 @@ async function main() {
       if (key.shift) { s.input = s.input.slice(0, s.cursor) + "\n" + s.input.slice(s.cursor); s.cursor++; redraw(); return; }
       // slash autocomplete enter picks highlighted
       if (s.slashOpen && !s.input.includes(" ")) {
-        const matches = SLASH_COMMANDS.filter((c) => c.name.startsWith(s.slashFilter || "/"));
+        const matches = commandList(s).filter((c) => c.name.startsWith(s.slashFilter || "/"));
         const m = matches[s.slashIndex];
         if (m && s.input !== m.name + " ") { s.input = m.name + " "; s.cursor = s.input.length; updateSlash(); redraw(); return; }
       }
@@ -473,9 +475,17 @@ async function handleSlash(s: UIState, sessionID: string, t: string, ctx: { auto
     case "/clear":
       s.transcript = [];
       return null;
-    case "/help":
-      s.transcript.push({ role: "assistant", text: SLASH_COMMANDS.map((c) => `${c.name} — ${c.desc}`).join("\n") + "\n\nKeys: esc interrupt • Ctrl+L clear • Ctrl+G editor • Shift+Tab mode • \\+Enter newline" });
+    case "/help": {
+      const all = commandList(s);
+      const oc = all.filter((c) => c.source === "opencode");
+      const local = all.filter((c) => c.source !== "opencode");
+      const body = [
+        ...(oc.length ? ["opencode commands:", ...oc.map((c) => `${c.name} — ${c.desc}`), ""] : []),
+        ...(local.length ? ["this TUI:", ...local.map((c) => `${c.name} — ${c.desc}`)] : []),
+      ].join("\n");
+      s.transcript.push({ role: "assistant", text: `${body}\n\nKeys: esc interrupt • Ctrl+L clear • Ctrl+G editor • Ctrl+O expand output • Shift+Tab mode • \\+Enter newline` });
       return null;
+    }
     case "/new": {
       const created = await BE.createSession(s.cwd, arg || "Cursor-look session");
       const id = String(created["id"]);
@@ -593,9 +603,20 @@ async function handleSlash(s: UIState, sessionID: string, t: string, ctx: { auto
       } catch (e) { s.transcript.push({ role: "error", text: String(e) }); }
       return null;
     }
-    default:
+    default: {
+      // Anything opencode itself provides runs server-side through the normal
+      // prompt pipeline, so it streams, renders and stamps like a turn.
+      const bare = cmd.replace(/^\//, "");
+      const oc = s.ocCommands.find((c) => c.name.replace(/^\//, "") === bare);
+      if (oc) {
+        await submit(s, sessionID, `${"/" + bare}${arg ? " " + arg : ""}`, {
+          run: () => BE.runCommand(sessionID, bare, arg),
+        });
+        return null;
+      }
       s.transcript.push({ role: "error", text: `Unknown command ${cmd}. Try /help.` });
       return null;
+    }
   }
 }
 
@@ -622,7 +643,7 @@ async function refreshContextPct(s: UIState, sessionID: string) {
   requestRedraw();
 }
 
-async function submit(s: UIState, sessionID: string, text: string, opts?: { files?: string[] }) {
+async function submit(s: UIState, sessionID: string, text: string, opts?: { files?: string[]; run?: (body: string) => Promise<unknown> }) {
   const mySeq = ++submitSeq;
   const t0 = Date.now();
   s.transcript.push({ role: "user", text });
@@ -666,7 +687,8 @@ async function submit(s: UIState, sessionID: string, text: string, opts?: { file
     const pre = await BE.listMessages(sessionID).catch(() => []);
     const preIds = new Set(pre.map((m) => m.id));
     const renderedIds = new Set<string>();
-    await BE.sendPrompt(sessionID, body, { model, agent, files: opts?.files });
+    if (opts?.run) await opts.run(body);
+    else await BE.sendPrompt(sessionID, body, { model, agent, files: opts?.files });
     s.statusMsg = ""; // status line above the box already shows the phase
     const merge = (msgs: BE.Msg[]) => {
       // Server lists newest-first; append in chronological order.
@@ -928,6 +950,10 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
               void refreshContextPct(s, getSession());
             });
           }
+        } else if (type === "command.updated") {
+          // project .opencode/command/*.md changed on disk — reload the list
+          s.ocCommands = (await BE.listCommands(s.cwd)).map((c) => ({ name: "/" + c.name, desc: c.description ?? "" }));
+          redraw();
         } else if (type === "session.status") {
           const st = String((props["status"] as Record<string, unknown> | undefined)?.["type"] ?? "");
           if (st === "busy") { s.streaming = true; if (s.phase === "idle") s.phase = "working"; redraw(); }
