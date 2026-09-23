@@ -125,12 +125,57 @@ Permission prompts: `[a]` allow once, `[A]` always, `[d]` reject.
 | Cursor concept | opencode v2 API |
 |---|---|
 | prompt submit | `session.prompt({sessionID, text, model?, agent?})` |
+| slash commands | `command.list` + `session.command` (opencode's own commands run server-side) |
 | streaming | `event.subscribe` (deltas/status) + `message.list` poll fallback |
 | interrupt | `session.interrupt` |
 | sessions | `session.list/create/fork/compact`, `message.list` |
 | models/agents | `model.list`, `agent.list` |
 | approvals | `permission.reply` (`once`/`always`/`reject`) |
 | MCP | `mcp.list` (via `/mcp` note) |
+| server→TUI | `tui.command.execute`, `tui.toast.show`, `tui.session.select`, `tui.prompt.append` |
+
+## Architecture
+
+Modules mirror opencode's own concepts rather than a flat grab-bag:
+
+```
+src/
+  main.ts          entry: arg parsing, -p print mode
+  app.ts           controller: bootstrap, keys, turn loop, event pump, timers
+  state.ts         UIState + the opencode message/part store
+  commands.ts      slash-command registry (opencode's merged with local)
+  slash.ts         local slash-command implementations
+  tips.ts          header tips + hints panel
+  spinners.ts      loading.dev-style thinking animations
+
+  opencode/        everything that talks to the service
+    client.ts      connection + low-level call surface
+    session.ts     session lifecycle, prompt, command, interrupt, vcs
+    message.ts     message history + token accounting
+    catalog.ts     models, agents, commands, mcp, permissions
+    parts.ts       opencode's part model (text/tool/reasoning/file/step)
+    events.ts      event → state dispatch table + server→TUI commands
+    index.ts       barrel
+
+  ui/              everything that draws
+    render.ts      frame assembly + cursor parking
+    transcript.ts  prompt blocks, thread lines, tool lines, output collapse
+    composer.ts    input box, placeholder, hints
+    status.ts      status line, completion stamp, toasts
+    popups.ts      slash + model popups (scrolling)
+    overlays.ts    permission prompt, diff review
+    theme.ts       colours and escape sequences
+    text.ts        wrapping, ANSI stripping, duration formatting
+    keys.ts        terminal key decoding
+```
+
+Two ideas drive the design:
+
+- **The event pump is a dispatch table**, not an if/else chain, so adding an
+  opencode event is one entry in `opencode/events.ts`.
+- **opencode's data model is authoritative.** `message.list` results and tool
+  events populate a real message/part store in `state.ts`; the transcript is a
+  view over it, and each transcript item links back by id.
 
 ## Troubleshooting
 
