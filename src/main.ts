@@ -103,13 +103,16 @@ async function main() {
       for (const m of msgs.slice(-30)) {
         s.transcript.push({ role: m.role.startsWith("user") ? "user" : m.role.includes("tool") ? "tool" : "assistant", text: m.text });
       }
+      if (msgs.length > 0) s.followUp = true;
     } catch { /* ignore */ }
-    // resolve real model label for this session (friendly name)
+    // resolve real model label for this session (friendly name) + context window
     try {
       const sess = await BE.getSession(sessionID);
       const mref = sess["model"] as { providerID: string; id: string } | undefined;
       s.modelLabel = mref ? await BE.friendlyModelName(mref) : await BE.getDefaultModelName();
+      s.contextLimit = await BE.modelContextLimit(mref ?? null);
     } catch { /* keep default */ }
+    void refreshContextPct(s, sessionID);
     // preload model picker items
     try {
       const models = await BE.listModels();
@@ -142,11 +145,19 @@ async function main() {
   process.on("SIGINT", () => { cleanup(); process.exit(0); });
 
   const redraw = () => draw(s);
+  requestRedraw = redraw;
 
-  // spinner tick
+  // spinner tick — also drives the token tick-up, stamp expiry, and tool timers
   const tick = setInterval(() => {
     s.spinner++;
-    if (s.streaming || s.statusMsg) redraw();
+    let need = s.streaming || !!s.statusMsg || s.stamp != null;
+    if (s.stamp && Date.now() >= s.stamp.until) { s.stamp = null; need = true; }
+    if (s.tokenDisplay !== s.turnTokens) {
+      const d = s.turnTokens - s.tokenDisplay;
+      s.tokenDisplay = Math.abs(d) <= 3 ? s.turnTokens : s.tokenDisplay + Math.sign(d) * Math.max(1, Math.ceil(Math.abs(d) / 3));
+      need = true;
+    }
+    if (need) redraw();
   }, 120);
 
   // tip rotation
@@ -237,6 +248,8 @@ async function main() {
           s.modelLabel = hit.label;
           s.statusMsg = `Model → ${hit.label}`;
           s.transcript.push({ role: "system", text: `Model → ${hit.label}` });
+          s.contextLimit = await BE.modelContextLimit({ providerID, id: rest.join("/") });
+          void refreshContextPct(s, sessionID);
         } catch (e) {
           s.transcript.push({ role: "error", text: `switchModel failed: ${String(e)}` });
         }
@@ -260,12 +273,13 @@ async function main() {
 
     if (key.kind === "ctrl") {
       if (key.key === "c") {
-        if (s.streaming) { try { await BE.interruptSession(sessionID); } catch { /* */ } s.streaming = false; s.statusMsg = "interrupted"; redraw(); return; }
+        if (s.streaming) { try { await BE.interruptSession(sessionID); } catch { /* */ } s.streaming = false; freezeToolTimers(s); s.statusMsg = "interrupted"; redraw(); return; }
         if (ctrlCCount >= 2 || s.input.length === 0) { clearInterval(tick); clearInterval(tipTimer); cleanup(); process.exit(0); }
         s.statusMsg = "press Ctrl+C again to quit";
         redraw(); return;
       }
       if (key.key === "l") { s.transcript = []; s.statusMsg = "screen cleared"; redraw(); return; }
+      if (key.key === "o") { s.outputExpanded = !s.outputExpanded; redraw(); return; } // expand/collapse tool output
       if (key.key === "g") { await openEditor(s); redraw(); return; }
       if (key.key === "r") {
         // ctrl+r — review changed files (vcs.diff overlay)
@@ -292,7 +306,7 @@ async function main() {
     if (key.kind === "esc") {
       if (s.slashOpen) { s.slashOpen = false; redraw(); return; }
       if (s.hintsOpen) { s.hintsOpen = false; redraw(); return; }
-      if (s.streaming) { try { await BE.interruptSession(sessionID); } catch { /* */ } s.streaming = false; s.statusMsg = "interrupted (esc)"; redraw(); return; }
+      if (s.streaming) { try { await BE.interruptSession(sessionID); } catch { /* */ } s.streaming = false; freezeToolTimers(s); s.statusMsg = "interrupted (esc)"; redraw(); return; }
       return;
     }
     if (key.kind === "tab") {
@@ -406,11 +420,12 @@ async function handleLine(
   if (t.startsWith("!")) {
     const cmd = t.slice(1).trim() || "ls";
     s.transcript.push({ role: "user", text: `!${cmd}` });
+    const t0 = Date.now();
     try {
       const proc = Bun.spawn(["bash", "-c", cmd], { cwd: s.cwd, stdout: "pipe", stderr: "pipe" });
       const [out, err] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text()]);
       await proc.exited;
-      s.transcript.push({ role: "tool", text: `$ ${cmd}\n${(out + err).slice(0, 4000) || "(no output)"}` });
+      s.transcript.push({ role: "tool", text: `$ ${cmd}\n${(out + err).slice(0, 4000) || "(no output)"}`, startedAt: t0, endedAt: Date.now() });
     } catch (e) {
       s.transcript.push({ role: "error", text: String(e) });
     }
@@ -482,6 +497,9 @@ async function handleSlash(s: UIState, sessionID: string, t: string, ctx: { auto
         const msgs = await BE.listMessages(arg);
         s.transcript = msgs.slice(-30).map((m) => ({ role: m.role.startsWith("user") ? "user" as const : "assistant" as const, text: m.text }));
         s.transcript.push({ role: "system", text: `Resumed ${arg}` });
+        s.followUp = true;
+        s.contextLimit = await BE.modelContextLimit(null);
+        void refreshContextPct(s, arg);
         return arg;
       } catch (e) { s.transcript.push({ role: "error", text: String(e) }); return null; }
     }
@@ -527,6 +545,8 @@ async function handleSlash(s: UIState, sessionID: string, t: string, ctx: { auto
           await BE.switchModel(sessionID, { providerID, id });
           s.modelLabel = friendly;
           s.transcript.push({ role: "system", text: `Model → ${friendly}` });
+          s.contextLimit = await BE.modelContextLimit({ providerID, id });
+          void refreshContextPct(s, sessionID);
         } catch (e) {
           s.transcript.push({ role: "error", text: `switchModel failed: ${String(e)}` });
         }
@@ -580,13 +600,38 @@ async function handleSlash(s: UIState, sessionID: string, t: string, ctx: { auto
 }
 
 let submitSeq = 0;
+let requestRedraw: () => void = () => {};
+
+/** Freeze any tool timer still counting (turn end / interrupt). */
+function freezeToolTimers(s: UIState) {
+  const now = Date.now();
+  for (const it of s.transcript) {
+    if (it.role === "tool" && it.startedAt != null && it.endedAt == null) it.endedAt = now;
+  }
+}
+
+/** Refresh the `· 7.5%` context readout from the newest assistant message. */
+async function refreshContextPct(s: UIState, sessionID: string) {
+  try {
+    if (!s.contextLimit || !sessionID) return;
+    const u = await BE.lastAssistantUsage(sessionID);
+    if (!u) { s.contextPct = null; return; }
+    const pct = Math.round(((u.input + u.cacheRead) / s.contextLimit) * 1000) / 10;
+    s.contextPct = pct > 0 ? Math.min(100, pct) : null;
+  } catch { /* keep previous */ }
+  requestRedraw();
+}
 
 async function submit(s: UIState, sessionID: string, text: string, opts?: { files?: string[] }) {
   const mySeq = ++submitSeq;
+  const t0 = Date.now();
   s.transcript.push({ role: "user", text });
   s.streaming = true;
   s.phase = "working";
   s.turnTokens = 0;
+  s.tokenDisplay = 0;
+  s.stamp = null; // previous completion stamp yields to the new turn
+  s.followUp = true; // box placeholder becomes "Add a follow-up"
   // usage.updated is session-cumulative — snapshot output tokens as baseline
   try {
     const sess = (await BE.getSession(sessionID)) as unknown as { tokens?: { output?: number } };
@@ -697,6 +742,11 @@ async function submit(s: UIState, sessionID: string, text: string, opts?: { file
       s.liveAssistantIdx = null;
       s.seenOrdinals.clear();
       s.toolLineById.clear();
+      freezeToolTimers(s);
+      s.tokenDisplay = s.turnTokens;
+      // completion stamp: "✓ done in 6.2s · 389 tokens", fades after ~3s
+      s.stamp = { at: Date.now(), durMs: Date.now() - t0, tokens: s.turnTokens, until: Date.now() + 3000 };
+      void refreshContextPct(s, sessionID);
     }
   }
 }
@@ -781,7 +831,9 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
             const seen = s.seenOrdinals.get(mid) ?? -1;
             if (ordinal > seen) {
               s.seenOrdinals.set(mid, ordinal);
-              const item = s.transcript[s.transcript.length - 1];
+              // deltas belong to the live assistant entry, even when a tool
+              // line was pushed after it
+              const item = s.liveAssistantIdx != null ? s.transcript[s.liveAssistantIdx] : s.transcript[s.transcript.length - 1];
               if (item && item.role === "assistant") item.text += delta;
             }
             s.streaming = true;
@@ -799,6 +851,7 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
           s.streaming = false;
           s.phase = "idle";
           s.statusMsg = "";
+          freezeToolTimers(s); // interrupted tools stop counting
           // final sync of the streamed message happens in submit()'s merge
           s.liveAssistantId = null;
           s.seenOrdinals.clear();
@@ -807,7 +860,7 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
           const toolId = String(props["id"] ?? "");
           const input = (props["input"] ?? {}) as Record<string, unknown>;
           const name = s.toolNameById.get(toolId) ?? String(props["tool"] ?? props["name"] ?? "tool");
-          s.transcript.push({ role: "tool", text: toolLineText(name, input), toolId });
+          s.transcript.push({ role: "tool", text: toolLineText(name, input), toolId, startedAt: Date.now() });
           s.toolLineById.set(toolId, s.transcript.length - 1);
           s.streaming = true;
           if (s.phase === "idle") s.phase = "working";
@@ -823,6 +876,10 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
             if (!had && idx !== undefined && s.transcript[idx] && s.transcript[idx].text === "tool…") {
               s.transcript[idx].text = `${name}…`;
               redraw();
+            }
+            // execution begins here (post-approval) — start the elapsed timer here
+            if (idx !== undefined && s.transcript[idx]?.startedAt != null && s.transcript[idx].endedAt == null) {
+              s.transcript[idx].startedAt = Date.now();
             }
           }
         } else if (type === "session.tool.input.ended") {
@@ -845,6 +902,19 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
           if (idx !== undefined && s.transcript[idx]) {
             const it = s.transcript[idx];
             it.text = it.text.replace(/\s*Waiting for approval\.\.\./, "");
+            it.endedAt = Date.now();
+            // shell tool output feeds the collapsible transcript block
+            if (/^\s*\$\s/.test(it.text)) {
+              const content = (props["content"] ?? []) as Array<{ type?: string; text?: string }>;
+              if (Array.isArray(content)) {
+                const joined = content
+                  .filter((p) => p && p.type === "text" && typeof p.text === "string")
+                  .map((p) => p.text as string)
+                  .join("\n")
+                  .replace(/\s+$/, "");
+                if (joined) it.output = joined.split("\n").slice(-200);
+              }
+            }
             if (failed && !it.text.startsWith("\u2717")) it.text = `\u2717 ${it.text}`;
           }
           redraw();
@@ -852,6 +922,11 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
           const ref = (props["model"] ?? {}) as { id?: string; providerID?: string };
           if (ref.id && ref.providerID) {
             void BE.friendlyModelName({ providerID: ref.providerID, id: ref.id }).then((n) => { s.modelLabel = n; });
+            // context window changed — recompute limit and the % readout
+            void BE.modelContextLimit({ providerID: ref.providerID, id: ref.id }).then((lim) => {
+              s.contextLimit = lim;
+              void refreshContextPct(s, getSession());
+            });
           }
         } else if (type === "session.status") {
           const st = String((props["status"] as Record<string, unknown> | undefined)?.["type"] ?? "");

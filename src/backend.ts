@@ -58,6 +58,67 @@ export async function getDefaultModelName(): Promise<string> {
   return "Auto";
 }
 
+/** Context window size for a model ref (ModelInfo.limit.context); 0 = unknown. */
+export async function modelContextLimit(ref: { providerID: string; id: string } | null | undefined): Promise<number> {
+  try {
+    if (ref) {
+      const models = await listModels();
+      const hit = models.find(
+        (m) => String(m["id"]) === ref.id && String(m["providerID"] ?? m["provider"]) === ref.providerID,
+      );
+      const lim = Number((hit?.["limit"] as { context?: number } | undefined)?.context ?? 0);
+      if (lim > 0) return lim;
+    }
+    // fall back to the default model's window
+    const cl = (await getClient()) as unknown as { model: { default: (o?: unknown) => Promise<unknown> } };
+    const raw = (await cl.model.default()) as Record<string, unknown> | null;
+    const d = (raw && "data" in raw ? (raw as { data?: unknown }).data : raw) as
+      | { limit?: { context?: number } }
+      | null
+      | undefined;
+    return Number(d?.limit?.context ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+export interface AssistantUsage {
+  input: number;
+  cacheRead: number;
+  output: number;
+  time: number;
+}
+
+/**
+ * Tokens of the newest assistant message — input + cache.read is the context
+ * actually sent on that request, which drives the `· 7.5%` model-line readout.
+ */
+export async function lastAssistantUsage(sessionID: string): Promise<AssistantUsage | null> {
+  try {
+    const cl = await c();
+    const r = unwrap<{ data?: Array<Record<string, unknown>> } | Array<Record<string, unknown>>>(
+      await cl.message.list({ sessionID, limit: 20 }),
+    );
+    const arr = Array.isArray(r) ? r : (r.data ?? []);
+    let best: AssistantUsage | null = null;
+    for (const m of arr) {
+      if (!msgRole(m).startsWith("assistant")) continue;
+      const t = m["tokens"] as { input?: number; output?: number; cache?: { read?: number } } | undefined;
+      if (!t) continue;
+      const u: AssistantUsage = {
+        input: Number(t.input ?? 0),
+        cacheRead: Number(t.cache?.read ?? 0),
+        output: Number(t.output ?? 0),
+        time: Number((m["time"] as Record<string, unknown> | undefined)?.["created"] ?? 0),
+      };
+      if (!best || u.time >= best.time) best = u;
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
 export async function switchModel(sessionID: string, model: { providerID: string; id: string; variant?: string }) {
   const cl = (await c()) as unknown as { session: { switchModel: (o: unknown) => Promise<unknown> } };
   await cl.session.switchModel({ sessionID, model });

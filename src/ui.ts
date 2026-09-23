@@ -40,6 +40,11 @@ export interface TranscriptItem {
   text: string;
   /** opencode tool-call id (tool items only) — used for live updates */
   toolId?: string;
+  /** tool timing (ms epoch) — drives the elapsed timer on the tool line */
+  startedAt?: number;
+  endedAt?: number;
+  /** tool output lines (agent shell tools) — collapsed, ctrl+o expands */
+  output?: string[];
 }
 
 export interface SlashCmd {
@@ -136,6 +141,8 @@ export interface UIState {
   phase: "idle" | "working" | "running";
   /** live output-token count for the current turn (cursor-style status line) */
   turnTokens: number;
+  /** animated token counter (eases toward turnTokens) */
+  tokenDisplay: number;
   /** session-cumulative output tokens at turn start (baseline for turnTokens) */
   turnBaseline: number;
   /** assistant message currently streaming (from session.text.delta) */
@@ -154,6 +161,16 @@ export interface UIState {
   diffScroll: number;
   /** pending inbox tasks (shown under box when > 0) */
   taskCount: number;
+  /** true once a turn has been submitted — swaps the box placeholder */
+  followUp: boolean;
+  /** ctrl+o — expand collapsed tool output */
+  outputExpanded: boolean;
+  /** completion stamp shown for ~3s after a turn settles */
+  stamp: { at: number; durMs: number; tokens: number; until: number } | null;
+  /** current model's context window (from ModelInfo.limit.context) */
+  contextLimit: number;
+  /** context used % (from last assistant message tokens) */
+  contextPct: number | null;
 }
 
 export function createState(cwd: string, version: string): UIState {
@@ -183,6 +200,7 @@ export function createState(cwd: string, version: string): UIState {
     cloudMsg: null,
     phase: "idle",
     turnTokens: 0,
+    tokenDisplay: 0,
     turnBaseline: 0,
     liveAssistantId: null,
     liveAssistantIdx: null,
@@ -193,10 +211,36 @@ export function createState(cwd: string, version: string): UIState {
     diffLines: [],
     diffScroll: 0,
     taskCount: 0,
+    followUp: false,
+    outputExpanded: false,
+    stamp: null,
+    contextLimit: 0,
+    contextPct: null,
   };
 }
 
 const SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+// Full-bleed user-prompt block: dark charcoal fill (cursor-agent's prompt echo).
+function userBlockRow(s: string, W: number): string {
+  return `\x1b[48;2;36;36;40m${s.padEnd(W)}\x1b[49m`;
+}
+
+/** Tool elapsed timer: 0ms → 35s → 1m35s */
+function fmtDur(ms: number): string {
+  if (ms < 1000) return `${Math.max(0, Math.round(ms))}ms`;
+  const sec = Math.floor(ms / 1000);
+  if (sec < 60) return `${sec}s`;
+  return `${Math.floor(sec / 60)}m${sec % 60}s`;
+}
+
+// Inline `code` in assistant answers, tinted like cursor-agent.
+function tint(s: string): string {
+  return `\x1b[38;2;168;181;230m${s}\x1b[39m`;
+}
+function inlineCode(t: string): string {
+  return t.replace(/`([^`\n]+)`/g, (_m, c: string) => tint(c));
+}
 
 export function render(s: UIState): string {
   const W = s.cols;
@@ -227,20 +271,72 @@ export function render(s: UIState): string {
   head.push(`  ${dim(TIPS[s.tipIndex % TIPS.length])}`);
   head.push("");
 
-  // Transcript (wrapped). Reasoning parts are already dropped in the backend;
-  // user lines get ●, tool lines get ⏺.
-  const wrapped: string[] = [];
-  for (const item of s.transcript) {
-    // cursor-style roles: user gets ●, tool lines are indented 4 (shell cmds keep $)
-    const isShellTool = item.role === "tool" && /^\s*\$\s/.test(item.text);
-    const prefix = item.role === "user" ? "  ● " : item.role === "tool" ? (isShellTool ? " " : "    ") : item.role === "system" ? "  " : "  ";
-    const color = (t: string) =>
-      item.role === "user" ? bold(t) : item.role === "tool" || item.role === "system" ? dim(t) : item.role === "error" ? `\x1b[31m${t}${ANSI.reset}` : t;
-    for (const ln of wrapText(item.text, Math.max(20, W - 6))) {
-      wrapped.push(color(prefix + ln));
+  // Transcript (wrapped). Reasoning parts are already dropped in the backend.
+  // Cursor-style layout: user prompts render as full-bleed filled blocks, and
+  // every turn hangs off a single dim thread line (│ … └) that runs from the
+  // prompt down to the end of that turn's answer.
+  const now = Date.now();
+  interface Row { plain: string; thread: string; kind: "content" | "blank" | "block"; seg: number }
+  const rows: Row[] = [];
+  let seg = -1; // segment id: -1 = before the first prompt (never guttered)
+  s.transcript.forEach((item, itemIdx) => {
+    if (item.role === "user") {
+      // prompt block: pad / text / pad — the thread line starts just below it
+      seg++;
+      const blank = userBlockRow("", W);
+      rows.push({ plain: blank, thread: blank, kind: "block", seg });
+      for (const ln of wrapText(item.text, Math.max(20, W - 3))) {
+        const row = userBlockRow(" " + ln, W);
+        rows.push({ plain: row, thread: row, kind: "block", seg });
+      }
+      rows.push({ plain: blank, thread: blank, kind: "block", seg });
+      rows.push({ plain: "", thread: "", kind: "blank", seg });
+      return;
     }
-    wrapped.push("");
-  }
+    const isShellTool = item.role === "tool" && /^\s*(?:\u2717\s*)?\$\s/.test(item.text);
+    const plainIndent = item.role === "tool" ? (isShellTool ? 1 : 4) : 2;
+    const mk = (inner: string, ind: number) => {
+      rows.push({ plain: " ".repeat(ind) + inner, thread: " ".repeat(Math.max(0, ind - 2)) + inner, kind: "content", seg });
+    };
+    const color = (t: string) =>
+      item.role === "tool" || item.role === "system" ? dim(t) : item.role === "error" ? `\x1b[31m${t}${ANSI.reset}` : t;
+    const wrapW = Math.max(20, W - 6);
+    const lines = wrapText(item.text, wrapW);
+    lines.forEach((ln, li) => {
+      let inner = item.role === "assistant" ? inlineCode(ln) : color(ln);
+      // tool elapsed timer: live while the call is open, frozen once it ends
+      if (item.role === "tool" && li === 0 && item.startedAt != null) {
+        const ms = (item.endedAt ?? (s.streaming ? now : item.startedAt)) - item.startedAt;
+        inner += ` ${dim(fmtDur(ms))}`;
+      }
+      // inverse block at the tip of live-streamed text
+      if (item.role === "assistant" && s.streaming && itemIdx === s.liveAssistantIdx && li === lines.length - 1) {
+        inner += `\x1b[7m \x1b[27m`;
+      }
+      mk(inner, plainIndent);
+    });
+    // collapsible tool output: marker + last two lines, full list on ctrl+o
+    if (item.output && item.output.length > 0) {
+      const shown = s.outputExpanded ? item.output : item.output.length > 2 ? item.output.slice(-2) : item.output;
+      const hidden = item.output.length - shown.length;
+      if (hidden > 0) mk(dim(`… ${hidden} output lines hidden · ctrl+o to expand`), 4);
+      for (const ol of shown) for (const wl of wrapText(ol, wrapW)) mk(dim(wl), 4);
+    }
+    rows.push({ plain: "", thread: "", kind: "blank", seg });
+  });
+  // Thread pass: the last content line of every segment gets └ so the line
+  // closes on the answer; trailing blank rows stay un-guttered.
+  const lastContent = new Map<number, number>();
+  rows.forEach((r, i) => {
+    if (r.kind === "content" && stripAnsi(r.plain).trim() !== "") lastContent.set(r.seg, i);
+  });
+  const wrapped = rows.map((r, i) => {
+    if (r.seg < 0 || r.kind === "block") return r.plain;
+    const last = lastContent.get(r.seg);
+    if (last === undefined || i > last) return r.plain;
+    if (r.kind === "blank") return dim("  │");
+    return (i === last ? "  └ " : "  │ ") + r.thread;
+  });
 
   // Everything below the transcript (popups, input box, meta, footer).
   const tail: string[] = [];
@@ -292,19 +388,26 @@ export function render(s: UIState): string {
 
   if (s.cloudMsg) tail.push(dim(`  ${s.cloudMsg}`));
 
-  // Status line — cursor-style spinner + phase + live token count (above box).
+  // Status line — cursor-style: green spinner, bold phase, dim token count
+  // (eased by tokenDisplay). Falls back to the completion stamp for ~3s after
+  // a turn settles. No "esc to interrupt" here — the box shows ctrl+c instead.
   if (s.streaming) {
-    const label =
-      s.phase === "working"
-        ? "Working"
-        : `Running${s.turnTokens > 0 ? `  ${s.turnTokens.toLocaleString("en-US")} tokens` : ""}`;
-    tail.push(dim(`  ${SPINNER[s.spinner % SPINNER.length]} ${label} — esc to interrupt`));
+    const label = s.phase === "working" ? "Working" : "Running";
+    const tok = label === "Running" && s.tokenDisplay > 0 ? dim(`  ${s.tokenDisplay.toLocaleString("en-US")} tokens`) : "";
+    tail.push(`  \x1b[32m${SPINNER[s.spinner % SPINNER.length]}\x1b[39m ${bold(label)}${tok}`);
+  } else if (s.stamp && now < s.stamp.until) {
+    const dur = s.stamp.durMs < 60_000 ? `${(s.stamp.durMs / 1000).toFixed(1)}s` : fmtDur(s.stamp.durMs);
+    const tok = s.stamp.tokens > 0 ? dim(` · ${s.stamp.tokens.toLocaleString("en-US")} tokens`) : "";
+    const body = `done in ${dur}${tok}`;
+    tail.push(`  \x1b[32m✓\x1b[39m ${now - s.stamp.at > 2000 ? dim(body) : body}`);
   }
 
   // Input box — plain flat grey panel like cursor-agent: no edge rows,
-  // just full-width filled lines.
+  // just full-width filled lines. While streaming the first row carries a
+  // right-aligned "ctrl+c to stop"; the placeholder swaps to "Add a follow-up"
+  // once a turn has been submitted.
   const boxTopIdx = tail.length;
-  const placeholder = "Plan, search, build anything";
+  const placeholder = s.followUp ? "Add a follow-up" : "Plan, search, build anything";
   const lines = s.input.split("\n");
   // Locate the terminal cursor inside the (possibly multiline) input.
   let remaining = Math.max(0, Math.min(s.cursor, s.input.length));
@@ -313,10 +416,15 @@ export function render(s: UIState): string {
   lines.forEach((ln, idx) => {
     const prefix = idx === 0 ? "→ " : "  ";
     const isEmpty = ln.length === 0 && idx === 0 && s.input.length === 0;
-    const body = isEmpty ? dim(placeholder) : ln;
+    // dim via 22m (not 0m) so the surrounding box background survives
+    const body = isEmpty ? `\x1b[2m${placeholder}\x1b[22m` : ln;
     const plainLen = 2 + (isEmpty ? placeholder.length : stripAnsi(body).length);
     const padN = Math.max(0, boxW - 1 - plainLen);
-    tail.push(" " + boxBg(` ${prefix}${body}${" ".repeat(padN)} `));
+    const hint = idx === 0 && s.streaming ? "ctrl+c to stop" : "";
+    const roomy = padN > hint.length + 2;
+    const pad = roomy ? padN - hint.length - 1 : padN;
+    const hintText = roomy ? ` \x1b[2m${hint}\x1b[22m` : "";
+    tail.push(" " + boxBg(` ${prefix}${body}${" ".repeat(pad)}${hintText} `));
     if (idx < lines.length - 1 && remaining > ln.length) {
       remaining -= ln.length + 1;
     } else if (remaining !== -1 && remaining <= ln.length) {
@@ -326,8 +434,9 @@ export function render(s: UIState): string {
     }
   });
   if (remaining !== -1) { cursorLine = lines.length - 1; cursorColInLine = lines[lines.length - 1]?.length ?? 0; }
+  const pct = s.contextPct != null && s.contextPct > 0 ? ` · ${s.contextPct}%` : "";
   const modelLine =
-    s.mode === "agent" ? s.modelLabel : s.mode === "plan" ? `Plan · ${s.modelLabel}` : `Ask · ${s.modelLabel}`;
+    (s.mode === "agent" ? s.modelLabel : s.mode === "plan" ? `Plan · ${s.modelLabel}` : `Ask · ${s.modelLabel}`) + pct;
   tail.push(`  ${dim(modelLine)}`);
   tail.push(`  ${dim(shortCwd(s.cwd))}`);
   if (s.taskCount > 0) tail.push(dim(`  ${s.taskCount} task${s.taskCount === 1 ? "" : "s"}`));
@@ -427,6 +536,7 @@ export function* splitKeys(data: string): Generator<Key> {
     if (ch === "\x0b") { i++; yield { kind: "ctrl", key: "k" }; continue; }
     if (ch === "\x04") { i++; yield { kind: "ctrl", key: "d" }; continue; }
     if (ch === "\x12") { i++; yield { kind: "ctrl", key: "r" }; continue; }
+    if (ch === "\x0f") { i++; yield { kind: "ctrl", key: "o" }; continue; }
     i++;
     yield { kind: "char", ch };
   }
@@ -444,6 +554,7 @@ export function parseKey(data: Buffer): Key {
   if (s === "\x05") return { kind: "ctrl", key: "e" };
   if (s === "\x15") return { kind: "ctrl", key: "u" };
   if (s === "\x0b") return { kind: "ctrl", key: "k" };
+  if (s === "\x0f") return { kind: "ctrl", key: "o" };
   if (s === "\x04") return { kind: "ctrl", key: "d" };
   if (s === "\x1b") return { kind: "esc" };
   if (s === "\x7f" || s === "\x08") return { kind: "backspace" };
