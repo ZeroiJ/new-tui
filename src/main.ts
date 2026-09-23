@@ -16,14 +16,23 @@ interface Args {
   print: boolean;
   trust: boolean;
   updateCheck: boolean;
+  renderer: "ansi" | "opentui";
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { prompt: "", mode: null, resume: null, cont: false, model: null, workspace: process.cwd(), print: false, trust: false, updateCheck: process.env.CTUI_NO_UPDATE_CHECK !== "1" };
+  const a: Args = { prompt: "", mode: null, resume: null, cont: false, model: null, workspace: process.cwd(), print: false, trust: false, updateCheck: process.env.CTUI_NO_UPDATE_CHECK !== "1", renderer: process.env.CTUI_RENDERER === "opentui" ? "opentui" : "ansi" };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === "-p" || t === "--print") a.print = true;
+    else if (t === "--renderer" && argv[i + 1]) {
+      const r = argv[++i];
+      if (r !== "ansi" && r !== "opentui") {
+        process.stderr.write(`unknown renderer "${r}" (use ansi or opentui)\n`);
+        process.exit(2);
+      }
+      a.renderer = r;
+    }
     else if (t === "--no-update-check") a.updateCheck = false;
     else if (t === "--mode" && argv[i + 1]) { const m = argv[++i]; if (m === "plan" || m === "ask") a.mode = m; }
     else if (t === "--plan") a.mode = "plan";
@@ -109,6 +118,7 @@ async function main() {
     prompt: args.prompt,
     resume: args.resume ?? undefined,
     continueLast: args.cont,
+    renderer: args.renderer,
   });
   await app.start();
   if (args.prompt) app.promptOnce(args.prompt);
