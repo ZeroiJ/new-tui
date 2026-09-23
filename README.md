@@ -8,6 +8,30 @@ A Bun + TypeScript TUI that pixel-matches `cursor-agent`'s interactive terminal
 (`opencode2`, API `2.0.8`) via `@opencode/client` — sessions, streaming,
 models, agents, permissions, MCP.
 
+## Renderers (experimental: OpenTUI)
+
+The TUI can draw itself with two frame engines behind one `UIState`:
+
+| `--renderer` | Engine | Notes |
+|---|---|---|
+| `ansi` (default) | our own string renderer | full-screen redraw, hand-rolled key decoding |
+| `opentui` | [OpenTUI](https://opentui.com) — the same native Zig core opencode's own TUI uses | cell-diff rendering, parsed key events, native editor, `ScrollBox` transcript |
+
+```bash
+bun src/main.ts --renderer=opentui    # or CTUI_RENDERER=opentui
+bun src/main.ts                       # ansi (default)
+```
+
+Both render the same UIState through the same row builders: `src/otui/ansi.ts`
+translates the existing SGR output into OpenTUI styled-text chunks, so the
+cursor-agent look is identical and `src/ui/*` keeps working for either engine.
+Control keys (arrows, ctrl+*, Tab, Esc, Enter) are intercepted before the
+OpenTUI `Textarea`, which owns plain editing and reports back into state.
+
+```bash
+bun test                              # headless renderer + input regression
+```
+
 ## Run
 
 ```bash
