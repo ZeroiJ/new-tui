@@ -1,0 +1,21 @@
+{
+  "name": "cursor-opencode",
+  "version": "0.1.0",
+  "description": "Cursor CLI look, opencode engine underneath",
+  "type": "module",
+  "private": true,
+  "bin": {
+    "cursor-opencode": "./src/main.ts"
+  },
+  "scripts": {
+    "start": "bun src/main.ts",
+    "dev": "bun --watch src/main.ts",
+    "build": "bun build src/main.ts --outdir dist --target bun"
+  },
+  "dependencies": {
+    "@opencode/client": "2.0.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2"
+  }
+}
