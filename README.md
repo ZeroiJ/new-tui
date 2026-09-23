@@ -43,7 +43,26 @@ The wrapper deliberately does *not* take the name `opencode` — that would
 shadow the real opencode CLI.
 
 Flags: `--mode plan|ask`, `--plan`, `--continue`/`-c`, `--resume <id>`,
-`--model <provider/model>`, `--workspace <dir>`, `--trust` (accepted, no-op).
+`--model <provider/model>`, `--workspace <dir>`, `--no-update-check`,
+`--trust` (accepted, no-op).
+
+### Startup update check
+
+`ctui` checks the installed `opencode2` against the npm registry on every
+interactive start (a single fetch, run in parallel with the service handshake).
+Nothing newer means no output at all. A newer **same-major** release installs
+itself behind a progress bar and restarts the service before the session
+opens; a **major** bump is announced with the command to run but never applied
+for you.
+
+```bash
+ctui                      # checks, then starts
+ctui --no-update-check    # skip the check
+CTUI_NO_UPDATE_CHECK=1 ctui
+CTUI_UPDATE_DRYRUN=1 ctui # show the bar, install nothing
+```
+
+`ctui -p` (print mode) never checks or prints this.
 
 Requires the opencode v2 service (this repo uses `opencode2`, **not** the old
 `opencode` 1.x binary):
@@ -129,10 +148,22 @@ re-implementations of the same motion — same cycle durations from their
 
 ## Slash commands
 
-`/model`, `/agent`, `/plan`, `/ask`, `/compact`, `/fork`, `/new`, `/ls`,
-`/resume`, `/clear`, `/goal`, `/add-dir`, `/mcp`, `/sandbox`,
+`/model`, `/agent`, `/plan`, `/ask`, `/compact`, `/fork`, `/new`, `/sessions`,
+`/ls`, `/resume`, `/clear`, `/goal`, `/add-dir`, `/mcp`, `/sandbox`,
 `/run-everything` (auto-approve toggle), `/auto-review`, `/spinner`,
 `/diff`, `/help`, `/quit`
+
+### Sessions are project-scoped
+
+opencode stores every session centrally (`~/.local/share/opencode/storage`),
+but each one records the directory it belongs to. This TUI filters on that,
+so a session list only ever shows the current workspace:
+
+- `/sessions` — interactive picker: ↑/↓ browse, Enter resumes, Tab copies the
+  id, Esc closes, text after the space filters by title or id
+- `/ls` — the same list as text
+- `--continue` — attaches to the newest session **in this workspace**, never
+  one from another project (which may be another client's live turn)
 
 Commands opencode itself provides (built-in and project
 `.opencode/command/*.md`) are listed first and run server-side through

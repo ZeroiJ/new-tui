@@ -24,6 +24,12 @@ export function getServerUrl(): string {
   return _endpoint?.url ?? "";
 }
 
+/** Drop the cached client — needed after the service binary is updated. */
+export function resetClient() {
+  _client = null;
+  _endpoint = null;
+}
+
 /** Most SDK responses arrive wrapped in `{ data }`; unwrap those. */
 export function unwrap<T>(r: unknown): T {
   const o = r as Record<string, unknown> | null;

@@ -14,6 +14,47 @@ export async function listSessions(): Promise<Array<Record<string, unknown>>> {
   return unwrap<Array<Record<string, unknown>>>(await cl.session.list()) ?? [];
 }
 
+// ---------------------------------------------------------------------------
+// workspace scoping
+//
+// opencode stores every session centrally, but each one records the directory
+// it belongs to. Filtering on that is how a session list becomes "this
+// project's sessions" without moving storage (which would need a per-project
+// service daemon).
+// ---------------------------------------------------------------------------
+
+export interface SessionSummary {
+  id: string;
+  title: string;
+  directory: string;
+  created: number;
+  updated: number;
+}
+
+export function summarize(raw: Record<string, unknown>): SessionSummary {
+  const time = (raw["time"] ?? {}) as { created?: number; updated?: number };
+  return {
+    id: String(raw["id"] ?? ""),
+    title: String(raw["title"] ?? "(untitled)"),
+    directory: String((raw["location"] as { directory?: string } | undefined)?.directory ?? ""),
+    created: Number(time.created ?? raw["created"] ?? 0),
+    updated: Number(time.updated ?? time.created ?? 0),
+  };
+}
+
+/** Sessions created in `directory`, newest activity first. */
+export async function listWorkspaceSessions(directory: string): Promise<SessionSummary[]> {
+  const all = (await listSessions()).map(summarize);
+  return all
+    .filter((s) => s.directory === directory)
+    .sort((a, b) => b.updated - a.updated);
+}
+
+/** Newest session in `directory` — what --continue attaches to. */
+export async function latestWorkspaceSession(directory: string): Promise<SessionSummary | null> {
+  return (await listWorkspaceSessions(directory))[0] ?? null;
+}
+
 export async function createSession(directory: string, title?: string, model?: string, agent?: string) {
   const cl = await client();
   const body: Record<string, unknown> = { location: { directory } };

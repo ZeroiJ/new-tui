@@ -40,3 +40,17 @@ export function fmtDur(ms: number): string {
   if (sec < 60) return `${sec}s`;
   return `${Math.floor(sec / 60)}m${sec % 60}s`;
 }
+
+/** Wall-clock age: 4s → 12m → 3h → 2d → (older) Mar 4 */
+export function relTime(epochMs: number, now = Date.now()): string {
+  if (!epochMs) return "—";
+  const sec = Math.max(0, Math.floor((now - epochMs) / 1000));
+  if (sec < 60) return `${sec}s`;
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}h`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}d`;
+  return new Date(epochMs).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}

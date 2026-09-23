@@ -7,7 +7,7 @@ import { render } from "./ui/render";
 import { splitKeys, takeIncompleteEscape, type Key } from "./ui/keys";
 import { commandList } from "./commands";
 import { runSlash } from "./slash";
-import { createState, freezeToolTimers, type UIState } from "./state";
+import { createState, freezeToolTimers, type UIState, type SessionItem } from "./state";
 import * as oc from "./opencode";
 
 let submitSeq = 0;
@@ -93,9 +93,12 @@ export class App {
       this.draw();
       await oc.getClient();
       s.version = (await oc.getServerInfo())?.version ?? "unknown";
-      const sessions = await oc.listSessions();
       if (this.opts.resume) this.sessionID = this.opts.resume;
-      else if (this.opts.continueLast && sessions.length > 0) this.sessionID = String(sessions[0]["id"]);
+      else if (this.opts.continueLast) {
+        // Scoped to this workspace — never attach to another project's turn.
+        const latest = await oc.latestWorkspaceSession(s.cwd);
+        if (latest) this.sessionID = latest.id;
+      }
       if (!this.sessionID) {
         const created = await oc.createSession(s.cwd, "Cursor-look session");
         this.sessionID = String(created["id"]);
@@ -515,6 +518,15 @@ export class App {
       return;
     }
     s.modelOpen = false;
+    // /sessions opens the workspace session picker; text after the space filters it
+    if (s.input === "/sessions" || s.input.startsWith("/sessions ")) {
+      s.slashOpen = false;
+      if (!s.sessionsOpen) void this.loadWorkspaceSessions();
+      s.sessionsOpen = true;
+      s.sessionIndex = 0;
+      return;
+    }
+    s.sessionsOpen = false;
     if (s.input.startsWith("/")) {
       s.slashOpen = true;
       const space = s.input.indexOf(" ");
@@ -526,6 +538,29 @@ export class App {
 
   private slashMatches() {
     return commandList(this.s).filter((c) => c.name.startsWith(this.s.slashFilter || "/"));
+  }
+
+  /** Sessions created in the current workspace, newest first. */
+  async loadWorkspaceSessions(): Promise<SessionItem[]> {
+    const s = this.s;
+    try {
+      const items = await oc.listWorkspaceSessions(s.cwd);
+      s.sessionItems = items.map((x) => ({ id: x.id, title: x.title, updated: x.updated }));
+    } catch {
+      s.sessionItems = [];
+    }
+    s.sessionIndex = Math.min(s.sessionIndex, Math.max(0, s.sessionItems.length - 1));
+    this.draw(); // the picker opened before this list existed — repaint it
+    return s.sessionItems;
+  }
+
+  /** /sessions rows after the typed filter, in the same order as the popup. */
+  private sessionMatches() {
+    const s = this.s;
+    const q = (s.input.startsWith("/sessions ") ? s.input.slice(10) : "").toLowerCase();
+    return s.sessionItems.filter(
+      (it) => !q || it.title.toLowerCase().includes(q) || it.id.toLowerCase().includes(q),
+    );
   }
 
   private async submitLine() {
@@ -599,6 +634,35 @@ export class App {
         this.draw();
         return;
       }
+    }
+
+    // /sessions picker — ↑/↓ browse, Enter resumes, Tab copies the id, Esc closes
+    if (s.sessionsOpen) {
+      const matches = this.sessionMatches();
+      const hit = () => matches[Math.min(s.sessionIndex, Math.max(0, matches.length - 1))];
+      if (key.kind === "up") { s.sessionIndex = Math.max(0, s.sessionIndex - 1); this.draw(); return; }
+      if (key.kind === "down") { s.sessionIndex = Math.min(Math.max(0, matches.length - 1), s.sessionIndex + 1); this.draw(); return; }
+      if (key.kind === "enter" && !key.shift) {
+        const pick = hit();
+        s.sessionsOpen = false;
+        s.input = "";
+        s.cursor = 0;
+        s.slashOpen = false;
+        if (pick) await this.switchSession(pick.id);
+        this.draw();
+        return;
+      }
+      if (key.kind === "tab" && !key.shift) {
+        const pick = hit();
+        if (pick) { s.input = `/resume ${pick.id}`; s.cursor = s.input.length; }
+        this.draw();
+        return;
+      }
+      if (key.kind === "esc") { s.sessionsOpen = false; s.input = ""; s.cursor = 0; this.draw(); return; }
+      if (
+        key.kind !== "backspace" && key.kind !== "delete" && key.kind !== "char" &&
+        key.kind !== "left" && key.kind !== "right" && key.kind !== "ctrl"
+      ) return;
     }
 
     // model picker navigation — runs before slash/history keys

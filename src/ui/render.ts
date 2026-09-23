@@ -4,7 +4,7 @@
 import { ANSI, dim } from "./theme";
 import { transcriptRows } from "./transcript";
 import { composer, metaRows } from "./composer";
-import { modelPopup, slashPopup } from "./popups";
+import { modelPopup, sessionsPopup, slashPopup } from "./popups";
 import { diffOverlay, permissionRows } from "./overlays";
 import { hintsRows, statusRows } from "./status";
 import { TIPS } from "../tips";
@@ -23,6 +23,7 @@ export function render(s: UIState): string {
   // Everything below the transcript, in draw order.
   const tail: string[] = [];
   if (s.modelOpen) tail.push(...modelPopup(s));
+  else if (s.sessionsOpen) tail.push(...sessionsPopup(s));
   else if (s.slashOpen) tail.push(...slashPopup(s));
   tail.push(...hintsRows(s));
   tail.push(...statusRows(s, now));

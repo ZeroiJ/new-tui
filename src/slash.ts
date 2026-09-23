@@ -40,10 +40,27 @@ export async function runSlash(app: App, cmd: string, arg: string): Promise<stri
       return id;
     }
 
+    case "/sessions": {
+      const items = await app.loadWorkspaceSessions();
+      s.input = "/sessions";
+      s.cursor = s.input.length;
+      s.sessionsOpen = true;
+      s.sessionIndex = 0;
+      if (items.length === 0) {
+        s.transcript.push({ role: "system", text: `No sessions yet for ${s.cwd}. Type a prompt to start one.` });
+      }
+      return null;
+    }
+
     case "/ls": {
-      const list = await oc.listSessions();
-      const lines = list.slice(0, 15).map((x) => `${String(x["id"])}  ${String((x["title"] as string) ?? "(untitled)")}`);
-      s.transcript.push({ role: "assistant", text: lines.join("\n") || "(no sessions)" });
+      const items = await oc.listWorkspaceSessions(s.cwd);
+      const lines = items
+        .slice(0, 15)
+        .map((x) => `${x.id}  ${x.title}  ${new Date(x.updated).toISOString().slice(0, 16).replace("T", " ")}`);
+      s.transcript.push({
+        role: "assistant",
+        text: lines.length ? `Sessions in ${s.cwd}:\n${lines.join("\n")}` : `(no sessions in ${s.cwd})`,
+      });
       return null;
     }
 

@@ -3,6 +3,13 @@ import type { SlashCmd } from "./commands";
 
 export type Mode = "agent" | "plan" | "ask";
 
+/** One row in the /sessions picker (workspace-scoped). */
+export interface SessionItem {
+  id: string;
+  title: string;
+  updated: number;
+}
+
 /**
  * One rendered line-group in the transcript. This is the view model — the
  * authoritative opencode data lives in `MessageRecord`/`PartRecord` below and
@@ -99,6 +106,10 @@ export interface UIState {
   modelItems: { label: string; value: string }[];
   modelOpen: boolean;
   modelIndex: number;
+  /** /sessions picker: this workspace's sessions, newest first */
+  sessionsOpen: boolean;
+  sessionItems: SessionItem[];
+  sessionIndex: number;
   streaming: boolean;
   /** which loading.dev-style thinking animation to play */
   spinnerName: string;
@@ -170,6 +181,9 @@ export function createState(cwd: string, version: string): UIState {
     modelItems: [],
     modelOpen: false,
     modelIndex: 0,
+    sessionsOpen: false,
+    sessionItems: [],
+    sessionIndex: 0,
     streaming: false,
     spinnerName: DEFAULT_SPINNER,
     spinStart: null,
