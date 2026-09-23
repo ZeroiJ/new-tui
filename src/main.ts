@@ -110,6 +110,15 @@ async function main() {
       const mref = sess["model"] as { providerID: string; id: string } | undefined;
       s.modelLabel = mref ? await BE.friendlyModelName(mref) : await BE.getDefaultModelName();
     } catch { /* keep default */ }
+    // preload model picker items
+    try {
+      const models = await BE.listModels();
+      s.modelItems = models.map((m) => {
+        const id = String(m["id"] ?? "");
+        const provider = String(m["providerID"] ?? m["provider"] ?? "");
+        return { label: String(m["name"] ?? id), value: `${provider}/${id}` };
+      }).filter((m) => m.value !== "/");
+    } catch { /* picker shows empty */ }
     s.statusMsg = "";
   } catch (e) {
     s.statusMsg = "";
@@ -150,6 +159,14 @@ async function main() {
   let autoApprove = false;
 
   function updateSlash() {
+    if (s.input.startsWith("/model") && (s.input === "/model" || s.input.startsWith("/model "))) {
+      // model picker takes over — suppress the slash popup
+      s.slashOpen = false;
+      s.modelOpen = true;
+      s.modelIndex = 0;
+      return;
+    }
+    s.modelOpen = false;
     if (s.input.startsWith("/")) {
       s.slashOpen = true;
       const space = s.input.indexOf(" ");
@@ -189,6 +206,42 @@ async function main() {
         try { await BE.replyPermission(sessionID, p.id, "reject"); } catch { /* */ }
         redraw(); return;
       }
+    }
+
+    // model picker navigation — runs before slash/history keys
+    if (s.modelOpen) {
+      const q = (s.input.startsWith("/model ") ? s.input.slice(7) : "").toLowerCase();
+      const matches = s.modelItems
+        .map((m, i) => ({ m, i }))
+        .filter(({ m }) => !q || m.label.toLowerCase().includes(q) || m.value.toLowerCase().includes(q));
+      const pick = async () => {
+        const hit = matches[Math.min(s.modelIndex, matches.length - 1)]?.m;
+        if (!hit) return;
+        const [providerID, ...rest] = hit.value.split("/");
+        try {
+          await BE.switchModel(sessionID, { providerID, id: rest.join("/") });
+          s.modelLabel = hit.label;
+          s.statusMsg = `Model → ${hit.label}`;
+          s.transcript.push({ role: "system", text: `Model → ${hit.label}` });
+        } catch (e) {
+          s.transcript.push({ role: "error", text: `switchModel failed: ${String(e)}` });
+        }
+        s.modelOpen = false;
+        s.input = ""; s.cursor = 0; s.slashOpen = false;
+      };
+      if (key.kind === "up") { s.modelIndex = Math.max(0, s.modelIndex - 1); redraw(); return; }
+      if (key.kind === "down") { s.modelIndex = Math.min(Math.max(0, matches.length - 1), s.modelIndex + 1); redraw(); return; }
+      if (key.kind === "enter" && !key.shift) { await pick(); redraw(); return; }
+      if (key.kind === "tab" && !key.shift) {
+        const hit = matches[Math.min(s.modelIndex, matches.length - 1)]?.m;
+        if (hit) { s.input = `/model ${hit.value}`; s.cursor = s.input.length; }
+        redraw(); return;
+      }
+      if (key.kind === "esc") { s.modelOpen = false; s.input = ""; s.cursor = 0; redraw(); return; }
+      if (key.kind === "backspace" || key.kind === "delete" || key.kind === "char" ||
+          key.kind === "left" || key.kind === "right" || key.kind === "ctrl") {
+        // fall through to normal editing (filter updates via updateSlash)
+      } else return;
     }
 
     if (key.kind === "ctrl") {

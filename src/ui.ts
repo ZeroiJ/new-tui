@@ -122,6 +122,10 @@ export interface UIState {
   slashOpen: boolean;
   slashFilter: string;
   slashIndex: number;
+  /** model picker: available models (preloaded) + open state */
+  modelItems: { label: string; value: string }[];
+  modelOpen: boolean;
+  modelIndex: number;
   streaming: boolean;
   spinner: number;
   statusMsg: string;
@@ -162,6 +166,9 @@ export function createState(cwd: string, version: string): UIState {
     slashOpen: false,
     slashFilter: "",
     slashIndex: 0,
+    modelItems: [],
+    modelOpen: false,
+    modelIndex: 0,
     streaming: false,
     spinner: 0,
     statusMsg: "",
@@ -210,14 +217,38 @@ export function render(s: UIState): string {
   // Everything below the transcript (popups, input box, meta, footer).
   const tail: string[] = [];
 
-  if (s.slashOpen) {
+  // Model picker (cursor-style): header + two-column rows, ↑/↓ navigate.
+  if (s.modelOpen) {
+    const q = (s.input.startsWith("/model ") ? s.input.slice(7) : "").toLowerCase();
+    const matches = s.modelItems
+      .filter((m) => !q || m.label.toLowerCase().includes(q) || m.value.toLowerCase().includes(q))
+      .slice(0, 8);
+    const NAME_W = 34;
+    tail.push(dim(`   /model [${q}]  Select model (Tab to edit, Enter to pick)`));
+    if (matches.length === 0) tail.push(dim("   (no matching models)"));
+    matches.forEach((m, i) => {
+      const arrow = i === s.modelIndex ? "→" : " ";
+      const name = m.label.padEnd(NAME_W);
+      tail.push(i === s.modelIndex
+        ? `   ${arrow} ${bold(name)} ${dim(m.value)}`
+        : dim(`   ${arrow} ${name} ${m.value}`));
+    });
+    if (s.modelItems.filter((m) => !q || m.label.toLowerCase().includes(q) || m.value.toLowerCase().includes(q)).length > 8) {
+      tail.push(dim("   ↓ more below"));
+    }
+  }
+
+  if (s.slashOpen && !s.modelOpen) {
     const q = s.slashFilter.toLowerCase();
     const matches = SLASH_COMMANDS.filter((c) => c.name.toLowerCase().startsWith(q || "/")).slice(0, 8);
+    const NAME_W = 30;
     if (matches.length === 0) tail.push(dim("   (no matching commands)"));
     matches.forEach((c, i) => {
       const arrow = i === s.slashIndex ? "→" : " ";
-      const label = `${c.name}  ${c.desc}`;
-      tail.push(i === s.slashIndex ? `   ${arrow} ${bold(c.name)} ${dim(c.desc)}` : dim(`   ${arrow} ${label}`));
+      const name = c.name.padEnd(NAME_W);
+      tail.push(i === s.slashIndex
+        ? `   ${arrow} ${bold(name)} ${dim(c.desc)}`
+        : dim(`   ${arrow} ${name} ${c.desc}`));
     });
     if (matches.length >= 8) tail.push(dim("   ↓ more below"));
   }
