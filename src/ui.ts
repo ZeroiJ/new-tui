@@ -38,6 +38,8 @@ export type Mode = "agent" | "plan" | "ask";
 export interface TranscriptItem {
   role: "user" | "assistant" | "tool" | "system" | "error";
   text: string;
+  /** opencode tool-call id (tool items only) — used for live updates */
+  toolId?: string;
 }
 
 export interface SlashCmd {
@@ -97,6 +99,14 @@ export function wrapText(text: string, width: number): string[] {
   return lines;
 }
 
+export interface PermissionState {
+  id: string;
+  action: string;
+  resources: string[];
+  message?: string;
+  hasSave: boolean;
+}
+
 export interface UIState {
   cols: number;
   rows: number;
@@ -116,8 +126,24 @@ export interface UIState {
   spinner: number;
   statusMsg: string;
   scrollOffset: number;
-  permission: { id: string; text: string } | null;
+  permission: PermissionState | null;
   cloudMsg: string | null;
+  /** "working" = waiting for first token; "running" = executing/streaming */
+  phase: "idle" | "working" | "running";
+  /** live output-token count for the current turn (cursor-style status line) */
+  turnTokens: number;
+  /** session-cumulative output tokens at turn start (baseline for turnTokens) */
+  turnBaseline: number;
+  /** assistant message currently streaming (from session.text.delta) */
+  liveAssistantId: string | null;
+  /** transcript index of the live-streamed assistant entry (merge replaces it) */
+  liveAssistantIdx: number | null;
+  /** per-assistantMessageID highest ordinal seen (dedupe deltas) */
+  seenOrdinals: Map<string, number>;
+  /** tool-call id → transcript index (live tool line updates) */
+  toolLineById: Map<string, number>;
+  /** tool-call id → tool name (refreshed from message polls) */
+  toolNameById: Map<string, string>;
 }
 
 export function createState(cwd: string, version: string): UIState {
@@ -142,6 +168,14 @@ export function createState(cwd: string, version: string): UIState {
     scrollOffset: 0,
     permission: null,
     cloudMsg: null,
+    phase: "idle",
+    turnTokens: 0,
+    turnBaseline: 0,
+    liveAssistantId: null,
+    liveAssistantIdx: null,
+    seenOrdinals: new Map(),
+    toolLineById: new Map(),
+    toolNameById: new Map(),
   };
 }
 
@@ -162,7 +196,9 @@ export function render(s: UIState): string {
   // user lines get ●, tool lines get ⏺.
   const wrapped: string[] = [];
   for (const item of s.transcript) {
-    const prefix = item.role === "user" ? "  ● " : item.role === "tool" ? "  ⏺ " : item.role === "system" ? "  " : "  ";
+    // cursor-style roles: user gets ●, tool lines are indented 4 (shell cmds keep $)
+    const isShellTool = item.role === "tool" && /^\s*\$\s/.test(item.text);
+    const prefix = item.role === "user" ? "  ● " : item.role === "tool" ? (isShellTool ? " " : "    ") : item.role === "system" ? "  " : "  ";
     const color = (t: string) =>
       item.role === "user" ? bold(t) : item.role === "tool" || item.role === "system" ? dim(t) : item.role === "error" ? `\x1b[31m${t}${ANSI.reset}` : t;
     for (const ln of wrapText(item.text, Math.max(20, W - 6))) {
@@ -170,7 +206,6 @@ export function render(s: UIState): string {
     }
     wrapped.push("");
   }
-  if (s.streaming) wrapped.push(dim(`  ${SPINNER[s.spinner % SPINNER.length]} working (${s.mode}) — esc to interrupt`));
 
   // Everything below the transcript (popups, input box, meta, footer).
   const tail: string[] = [];
@@ -197,6 +232,15 @@ export function render(s: UIState): string {
   }
 
   if (s.cloudMsg) tail.push(dim(`  ${s.cloudMsg}`));
+
+  // Status line — cursor-style spinner + phase + live token count (above box).
+  if (s.streaming) {
+    const label =
+      s.phase === "working"
+        ? "Working"
+        : `Running${s.turnTokens > 0 ? `  ${s.turnTokens.toLocaleString("en-US")} tokens` : ""}`;
+    tail.push(dim(`  ${SPINNER[s.spinner % SPINNER.length]} ${label} — esc to interrupt`));
+  }
 
   // Input box — plain flat grey panel like cursor-agent: no edge rows,
   // just full-width filled lines.
@@ -228,9 +272,31 @@ export function render(s: UIState): string {
   tail.push(`  ${dim(modelLine)}`);
   tail.push(`  ${dim(shortCwd(s.cwd))}`);
 
-  // Footer: cursor-agent shows nothing here by default — only transient state.
-  if (s.permission) tail.push(bold(`  Permission: ${s.permission.text}  [a] once / [A] always / [d] reject`));
-  else if (s.statusMsg) tail.push(`  ${dim(s.statusMsg)}`);
+  // Permission overlay — cursor-agent's menu (divider, context, question, arrow menu).
+  if (s.permission) {
+    const p = s.permission;
+    tail.push(dim("─".repeat(Math.max(10, s.cols - 2))));
+    const ctx = p.resources[0] ?? p.action;
+    tail.push(` $  ${ctx}`);
+    const question = /shell|bash|command|exec/i.test(p.action)
+      ? "Run this command?"
+      : `${p.action.replace(/[._]/g, " ")}?`;
+    tail.push(` ${bold(question)}`);
+    if (ctx) {
+      const lastTok = ctx.split(/\s+/)[0] ?? ctx;
+      tail.push(dim(` Not in allowlist: ${lastTok.slice(0, 40)}`));
+    }
+    if (p.message) tail.push(dim(` ${p.message.slice(0, s.cols - 4)}`));
+    tail.push(`  ${bold("→")} Run (once) ${dim("(y)")}`);
+    if (p.hasSave) tail.push(dim(`    Add ${ctx.split(/\s+/)[0] ?? ctx} to allowlist? (tab)`));
+    tail.push(dim(`    Run Everything (shift+tab)`));
+    tail.push(dim(`    Skip & tell the agent what to do instead (esc or n)`));
+    const hint = "ctrl+r to review changed files";
+    const pad = Math.max(1, s.cols - hint.length - 2);
+    tail.push(dim(" " + " ".repeat(pad) + hint));
+  } else if (s.statusMsg) {
+    tail.push(`  ${dim(s.statusMsg)}`);
+  }
 
   // Top-anchored flow like cursor-agent: transcript takes what's left.
   const avail = Math.max(5, s.rows - head.length - tail.length - 1);

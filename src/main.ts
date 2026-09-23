@@ -162,15 +162,20 @@ async function main() {
   async function handleKey(key: Key) {
     ctrlCCount = key.kind === "ctrl" && key.key === "c" ? ctrlCCount + 1 : 0;
 
-    // permission popup takes a/d
+    // permission overlay: cursor menu keys — y once, tab allowlist, shift+tab run-everything, esc/n reject
     if (s.permission) {
-      if (key.kind === "char" && (key.ch === "a" || key.ch === "y")) {
+      if (key.kind === "char" && (key.ch === "y" || key.ch === "a")) {
         const p = s.permission; s.permission = null; s.statusMsg = "allowed once";
         try { await BE.replyPermission(sessionID, p.id, "once"); } catch (e) { s.statusMsg = String(e); }
         redraw(); return;
       }
-      if (key.kind === "char" && key.ch === "A") {
-        const p = s.permission; s.permission = null; s.statusMsg = "always allowed";
+      if (key.kind === "tab" && !key.shift) {
+        const p = s.permission; s.permission = null; s.statusMsg = "added to allowlist";
+        try { await BE.replyPermission(sessionID, p.id, "always"); } catch (e) { s.statusMsg = String(e); }
+        redraw(); return;
+      }
+      if (key.kind === "tab" && key.shift) {
+        const p = s.permission; s.permission = null; autoApprove = true; s.statusMsg = "Run Everything enabled";
         try { await BE.replyPermission(sessionID, p.id, "always"); } catch (e) { s.statusMsg = String(e); }
         redraw(); return;
       }
@@ -179,7 +184,11 @@ async function main() {
         try { await BE.replyPermission(sessionID, p.id, "reject"); } catch (e) { s.statusMsg = String(e); }
         redraw(); return;
       }
-      if (key.kind === "esc") { s.permission = null; redraw(); return; }
+      if (key.kind === "esc") {
+        const p = s.permission; s.permission = null; s.statusMsg = "skipped — agent informed";
+        try { await BE.replyPermission(sessionID, p.id, "reject"); } catch { /* */ }
+        redraw(); return;
+      }
     }
 
     if (key.kind === "ctrl") {
@@ -282,7 +291,7 @@ async function main() {
   draw(s);
 
   // background event pump (streaming deltas, permissions, tool progress)
-  void eventPump(s, () => sessionID, () => autoApprove);
+  void eventPump(s, () => sessionID, () => autoApprove, redraw);
 }
 
 async function openEditor(s: UIState) {
@@ -491,7 +500,19 @@ async function submit(s: UIState, sessionID: string, text: string, opts?: { file
   const mySeq = ++submitSeq;
   s.transcript.push({ role: "user", text });
   s.streaming = true;
-  s.statusMsg = "sending to opencode…";
+  s.phase = "working";
+  s.turnTokens = 0;
+  // usage.updated is session-cumulative — snapshot output tokens as baseline
+  try {
+    const sess = (await BE.getSession(sessionID)) as unknown as { tokens?: { output?: number } };
+    s.turnBaseline = Number(sess?.tokens?.output ?? 0);
+  } catch { s.turnBaseline = 0; }
+  s.liveAssistantId = null;
+  s.liveAssistantIdx = null;
+  s.seenOrdinals.clear();
+  s.toolLineById.clear();
+  s.statusMsg = ""; // phase is shown by the status line above the box
+  const turnStart = s.transcript.length; // first index owned by this turn
   let assistantIdx = -1;
   const ensureAssistant = () => {
     if (assistantIdx === -1) {
@@ -505,7 +526,9 @@ async function submit(s: UIState, sessionID: string, text: string, opts?: { file
     if (s.mode === "plan") body = `[PLAN MODE]\n${text}`;
     if (s.mode === "ask") body = `[ASK MODE - read-only]\n${text}`;
     const pendingAgent = (s as unknown as Record<string, unknown>)["pendingAgent"] as string | undefined;
-    const model = s.modelLabel && s.modelLabel !== "Auto" ? s.modelLabel : undefined;
+    // Only pass an explicit provider/id ref as model — the friendly display
+    // name (s.modelLabel) is not a valid ModelRef and would be rejected.
+    const model = s.modelLabel.includes("/") && !s.modelLabel.includes(" ") ? s.modelLabel : undefined;
     const agent = pendingAgent ?? (s.mode === "plan" ? "plan" : undefined);
     (s as unknown as Record<string, unknown>)["pendingAgent"] = undefined;
     // Snapshot BEFORE sending: session.prompt can resolve after execution
@@ -514,18 +537,43 @@ async function submit(s: UIState, sessionID: string, text: string, opts?: { file
     const preIds = new Set(pre.map((m) => m.id));
     const renderedIds = new Set<string>();
     await BE.sendPrompt(sessionID, body, { model, agent, files: opts?.files });
-    s.statusMsg = "streaming…";
+    s.statusMsg = ""; // status line above the box already shows the phase
     const merge = (msgs: BE.Msg[]) => {
       // Server lists newest-first; append in chronological order.
       const fresh = msgs
         .filter((m) => !preIds.has(m.id) && !renderedIds.has(m.id) && !m.role.startsWith("user") && m.text.trim());
+      // Live events already drew this turn's tool lines — don't duplicate them.
+      let liveToolThisTurn = false;
+      for (const idx of s.toolLineById.values()) if (idx >= turnStart) { liveToolThisTurn = true; break; }
       for (const m of [...fresh].reverse()) {
         renderedIds.add(m.id);
-        if (m.role.includes("tool")) s.transcript.push({ role: "tool", text: m.text.slice(0, 3000) });
+        if (m.role.includes("tool")) {
+          if (liveToolThisTurn) continue; // rendered live from session.tool.* events
+          s.transcript.push({ role: "tool", text: m.text.slice(0, 3000) });
+        }
         else if (m.role === "idle") { /* execution settled marker, nothing to show */ }
+        else if (/^\[tool:[^\]]+\]$/.test(m.text.trim()) && liveToolThisTurn) {
+          // tool-part placeholder — already rendered as a live tool line
+          continue;
+        }
         else {
-          const idx = ensureAssistant();
-          s.transcript[idx] = { role: "assistant", text: (s.transcript[idx].text + "\n" + m.text).trim() };
+          // Authoritative text: replace the live-streamed entry if we have one.
+          let target = -1;
+          for (let i = s.transcript.length - 1; i >= turnStart; i--) {
+            if (s.transcript[i].role === "assistant") { target = i; break; }
+          }
+          if (target === -1) {
+            s.transcript.push({ role: "assistant", text: m.text });
+            assistantIdx = s.transcript.length - 1;
+          } else if (target === s.liveAssistantIdx) {
+            // live entry already holds the same content — replace with server copy
+            s.transcript[target] = { role: "assistant", text: m.text };
+            assistantIdx = target;
+          } else {
+            const cur = s.transcript[target].text;
+            s.transcript[target] = { role: "assistant", text: (cur + "\n" + m.text).trim() };
+            assistantIdx = target;
+          }
         }
       }
       const sig = msgs.filter((m) => !preIds.has(m.id)).map((m) => `${m.id}:${m.text.length}`).join("|");
@@ -557,12 +605,37 @@ async function submit(s: UIState, sessionID: string, text: string, opts?: { file
     s.transcript.push({ role: "error", text: `opencode error: ${String(e)}` });
     s.statusMsg = "";
   } finally {
-    if (mySeq === submitSeq) s.streaming = false;
+    if (mySeq === submitSeq) {
+      s.streaming = false;
+      s.phase = "idle";
+      s.liveAssistantId = null;
+      s.liveAssistantIdx = null;
+      s.seenOrdinals.clear();
+      s.toolLineById.clear();
+    }
   }
 }
 
-async function eventPump(s: UIState, getSession: () => string, isAuto: () => boolean) {
+async function eventPump(s: UIState, getSession: () => string, isAuto: () => boolean, redraw: () => void) {
   let backoff = 1000;
+  // cursor-style tool line text from a tool call input
+  const toolLineText = (name: string, input: Record<string, unknown>): string => {
+    const inStr = (k: string) => (typeof input[k] === "string" ? String(input[k]) : "");
+    if (/shell|bash|exec|run|terminal/i.test(name)) {
+      const cmd = inStr("command") || inStr("cmd");
+      if (cmd) return `$ ${cmd}`;
+      return "$ Running command\u2026";
+    }
+    const fp = inStr("filePath") || inStr("path") || inStr("file");
+    if (fp) return `Editing ${fp.split("/").pop() ?? fp}`;
+    const desc = inStr("description") || inStr("prompt");
+    if (desc) return `${name}: ${desc.slice(0, 80)}`;
+    return `${name}\u2026`;
+  };
+  const doneText = (text: string, ok: boolean): string => {
+    const base = text.replace(/\s*Waiting for approval\.\.\.$/, "");
+    return ok ? base : `\u2717 ${base}`;
+  };
   for (;;) {
     try {
       const ctl = new AbortController();
@@ -574,28 +647,130 @@ async function eventPump(s: UIState, getSession: () => string, isAuto: () => boo
         const props = ((ev["properties"] ?? ev["data"] ?? {}) as Record<string, unknown>);
         const sid = String((props["sessionID"] as string) ?? (ev["sessionID"] as string) ?? "");
         if (sid && sid !== getSession()) continue;
-        if (type.includes("PermissionAsked") || type === "permission.asked") {
+
+        if (type === "permission.asked") {
           const reqId = String(props["id"] ?? props["requestID"] ?? "");
-          const action = String(props["action"] ?? "");
-          const res = Array.isArray(props["resources"]) ? (props["resources"] as string[]).slice(0, 2).join(", ") : "";
-          const text = `${action} ${res}`.trim() || type;
+          const action = String(props["action"] ?? "allow");
+          const resources = Array.isArray(props["resources"]) ? (props["resources"] as string[]) : [];
+          const save = Array.isArray(props["save"]) ? (props["save"] as unknown[]) : [];
+          const message = typeof props["message"] === "string" ? (props["message"] as string) : undefined;
           if (reqId) {
             if (isAuto()) {
               try { await BE.replyPermission(getSession(), reqId, "once"); } catch { /* */ }
             } else {
-              s.permission = { id: reqId, text };
+              s.permission = { id: reqId, action, resources, message, hasSave: save.length > 0 };
+              // inline "Waiting for approval..." on the matching shell line
+              const head = resources[0]?.split(/\s+/)[0];
+              if (head) {
+                for (let i = s.transcript.length - 1; i >= 0; i--) {
+                  const it = s.transcript[i];
+                  if (it.role === "tool" && it.text.includes(head) && !it.text.includes("Waiting for approval")) {
+                    it.text += " Waiting for approval...";
+                    break;
+                  }
+                }
+              }
             }
           }
-        } else if (type.includes("TextDelta") || type.includes("ReasoningDelta") || type.includes("CompactionDelta")) {
-          s.streaming = true;
-        } else if (type.includes("ExecutionSucceeded") || type.includes("ExecutionFailed") || type.includes("ExecutionInterrupted") || type.includes("Idle")) {
+          redraw();
+        } else if (type === "permission.replied") {
+          s.permission = null;
+          for (const it of s.transcript) {
+            if (it.role === "tool" && it.text.includes("Waiting for approval")) {
+              it.text = it.text.replace(/\s*Waiting for approval\.\.\./, "");
+            }
+          }
+          redraw();
+        } else if (type === "session.text.delta") {
+          // Live token streaming (cursor-style): append deltas as they arrive.
+          const mid = String(props["assistantMessageID"] ?? "");
+          const ordinal = Number(props["ordinal"] ?? -1);
+          const delta = String(props["delta"] ?? "");
+          if (mid && delta) {
+            if (s.liveAssistantId !== mid) {
+              s.liveAssistantId = mid;
+              s.transcript.push({ role: "assistant", text: "" });
+              s.liveAssistantIdx = s.transcript.length - 1;
+              s.seenOrdinals.clear();
+            }
+            const seen = s.seenOrdinals.get(mid) ?? -1;
+            if (ordinal > seen) {
+              s.seenOrdinals.set(mid, ordinal);
+              const item = s.transcript[s.transcript.length - 1];
+              if (item && item.role === "assistant") item.text += delta;
+            }
+            s.streaming = true;
+            if (s.phase !== "running") s.phase = "running";
+            redraw();
+          }
+        } else if (type === "session.usage.updated") {
+          const tok = (props["tokens"] ?? {}) as Record<string, number>;
+          s.turnTokens = Math.max(0, Number(tok["output"] ?? 0) - s.turnBaseline);
+          redraw();
+        } else if (
+          type === "session.execution.succeeded" || type === "session.execution.failed" ||
+          type === "session.execution.interrupted" || type === "session.idle"
+        ) {
           s.streaming = false;
+          s.phase = "idle";
           s.statusMsg = "";
-        } else if (type.includes("ToolCalled") || type.includes("ToolProgress")) {
-          const name = String(props["tool"] ?? props["name"] ?? "tool");
-          s.statusMsg = `⏺ ${name}…`;
-        } else if (type.includes("ToolSuccess") || type.includes("ToolFailed")) {
-          s.statusMsg = "";
+          // final sync of the streamed message happens in submit()'s merge
+          s.liveAssistantId = null;
+          s.seenOrdinals.clear();
+          redraw();
+        } else if (type === "session.tool.called") {
+          const toolId = String(props["id"] ?? "");
+          const input = (props["input"] ?? {}) as Record<string, unknown>;
+          const name = s.toolNameById.get(toolId) ?? String(props["tool"] ?? props["name"] ?? "tool");
+          s.transcript.push({ role: "tool", text: toolLineText(name, input), toolId });
+          s.toolLineById.set(toolId, s.transcript.length - 1);
+          s.streaming = true;
+          if (s.phase === "idle") s.phase = "working";
+          redraw();
+        } else if (type === "session.tool.input.started") {
+          // carries the real tool name for this call id — learn it for line text
+          const toolId = String(props["id"] ?? "");
+          const name = String(props["name"] ?? "");
+          if (toolId && name) {
+            const had = s.toolNameById.has(toolId);
+            s.toolNameById.set(toolId, name);
+            const idx = s.toolLineById.get(toolId);
+            if (!had && idx !== undefined && s.transcript[idx] && s.transcript[idx].text === "tool…") {
+              s.transcript[idx].text = `${name}…`;
+              redraw();
+            }
+          }
+        } else if (type === "session.tool.input.ended") {
+          // data.text is the JSON-encoded tool input — re-render, never show raw JSON
+          const toolId = String(props["id"] ?? "");
+          const idx = s.toolLineById.get(toolId);
+          const raw = String(props["text"] ?? "");
+          if (idx !== undefined && s.transcript[idx] && raw) {
+            try {
+              const parsed = JSON.parse(raw) as Record<string, unknown>;
+              const name = s.toolNameById.get(toolId) ?? "tool";
+              s.transcript[idx].text = toolLineText(name, parsed);
+            } catch { /* keep existing line */ }
+            redraw();
+          }
+        } else if (type === "session.tool.success" || type === "session.tool.failed") {
+          const toolId = String(props["id"] ?? "");
+          const failed = type === "session.tool.failed";
+          const idx = s.toolLineById.get(toolId);
+          if (idx !== undefined && s.transcript[idx]) {
+            const it = s.transcript[idx];
+            it.text = it.text.replace(/\s*Waiting for approval\.\.\./, "");
+            if (failed && !it.text.startsWith("\u2717")) it.text = `\u2717 ${it.text}`;
+          }
+          redraw();
+        } else if (type === "session.model.selected") {
+          const ref = (props["model"] ?? {}) as { id?: string; providerID?: string };
+          if (ref.id && ref.providerID) {
+            void BE.friendlyModelName({ providerID: ref.providerID, id: ref.id }).then((n) => { s.modelLabel = n; });
+          }
+        } else if (type === "session.status") {
+          const st = String((props["status"] as Record<string, unknown> | undefined)?.["type"] ?? "");
+          if (st === "busy") { s.streaming = true; if (s.phase === "idle") s.phase = "working"; redraw(); }
         }
       }
       clearTimeout(timer);
