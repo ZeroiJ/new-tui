@@ -26,6 +26,10 @@ describe("otui shell", () => {
     const shell = await OtuiShell.create({ onKey: () => {}, onEdit: () => {} }, setup.renderer);
     shell.sync(s);
     await setup.renderOnce();
+    // The transcript height is measured from scrollHeight, which is only
+    // populated after a layout pass — mirror the app's 120ms redraw tick.
+    shell.sync(s);
+    await setup.renderOnce();
 
     const frame = setup.captureCharFrame();
     expect(frame).toContain("Opencode");

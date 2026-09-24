@@ -25,7 +25,17 @@ function parseArgs(argv: string[]): Args {
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === "-p" || t === "--print") a.print = true;
+    else if (t?.startsWith("--renderer=")) {
+      // equals form: --renderer=opentui
+      const r = t.slice("--renderer=".length);
+      if (r !== "ansi" && r !== "opentui") {
+        process.stderr.write(`unknown renderer "${r}" (use ansi or opentui)\n`);
+        process.exit(2);
+      }
+      a.renderer = r;
+    }
     else if (t === "--renderer" && argv[i + 1]) {
+      // space form: --renderer opentui
       const r = argv[++i];
       if (r !== "ansi" && r !== "opentui") {
         process.stderr.write(`unknown renderer "${r}" (use ansi or opentui)\n`);

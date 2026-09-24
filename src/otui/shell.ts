@@ -24,7 +24,7 @@ import type { InstalledKeymap } from "./keymap";
 
 import { ansiToStyled, ansiRowsToStyled } from "./ansi";
 import { installKeymap } from "./keymap";
-import { transcriptRows } from "../ui/transcript";
+import { TranscriptView } from "./transcript";
 import { modelPopup, sessionsPopup, slashPopup } from "../ui/popups";
 import { hintsRows, statusRows } from "../ui/status";
 import { metaRows } from "../ui/composer";
@@ -88,7 +88,7 @@ export class OtuiShell {
 
   private head!: TextRenderable;
   private scroll!: ScrollBoxRenderable;
-  private body!: TextRenderable;
+  private transcriptView!: TranscriptView;
   private popup!: TextRenderable;
   private hints!: TextRenderable;
   private status!: TextRenderable;
@@ -111,11 +111,10 @@ export class OtuiShell {
       new TextRenderable(r, { id, content, wrapMode: "none", selectable: false });
 
     this.head = text("head");
-    this.body = text("body");
     this.scroll = new ScrollBoxRenderable(r, {
       id: "transcript",
       width: "100%",
-      height: 3,
+      height: 1,
       stickyScroll: true,
       stickyStart: "bottom",
       scrollY: true,
@@ -123,7 +122,7 @@ export class OtuiShell {
       viewportCulling: true,
       verticalScrollbarOptions: { visible: false },
     });
-    this.scroll.add(this.body);
+    this.transcriptView = new TranscriptView(r, this.scroll);
     this.popup = text("popup");
     this.hints = text("hints");
     this.status = text("status");
@@ -242,35 +241,34 @@ export class OtuiShell {
     // composer: text and cursor are owned by the Textarea, mirrored into state
     this.syncComposer(s);
 
-    // transcript: same row builders, sized so the box hugs the content
-    const rows = transcriptRows(s);
+    // transcript: per-item renderables (assistant = Markdown) inside the
+    // ScrollBox, which hugs its content up to the available height.
+    this.transcriptView.sync(s);
     const headH = 4;
     const tailH =
       popupRows.length + hintsRows(s).length + statusRows(s, Date.now()).length +
       1 + metaRows(s).length + extra.length;
     const avail = Math.max(3, s.rows - headH - tailH - 1);
-    const wanted = Math.max(1, Math.min(rows.length, avail));
+    // The transcript hugs its content up to the available height. scrollHeight
+    // is the measured content height (dynamic for Markdown), so numeric height
+    // = min(content, avail) reproduces the top-anchored frame; the 120ms tick
+    // re-measures, so a Markdown block that grows settles on the next frame.
+    const contentH = this.scroll.scrollHeight;
+    const wanted = Math.max(1, Math.min(Math.max(1, contentH), avail));
     if (wanted !== this.lastRows || s.cols !== this.lastCols) {
       this.scroll.height = wanted;
       this.lastRows = wanted;
       this.lastCols = s.cols;
     }
-    const joined = rows.join("\n");
-    if (joined !== this.lastBody) {
-      this.body.content = ansiRowsToStyled(rows);
-      this.lastBody = joined;
-    }
     // scrollOffset counts lines up from the bottom, like the ANSI frame
     if (s.scrollOffset > 0) {
-      const maxTop = Math.max(0, rows.length - wanted);
+      const maxTop = Math.max(0, contentH - wanted);
       this.scroll.scrollTop = Math.max(0, maxTop - s.scrollOffset);
     } else {
       this.scroll.scrollTo(this.scroll.scrollHeight);
     }
     void r;
   }
-
-  private lastBody = "";
 
   private syncComposer(s: UIState) {
     const lines = s.input.split("\n").length;
