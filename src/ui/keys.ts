@@ -12,6 +12,7 @@ export type Key =
   | { kind: "left" }
   | { kind: "right" }
   | { kind: "ctrl"; key: string }
+  | { kind: "copy" }
   | { kind: "unknown" };
 
 const CTRL: Record<string, string> = {
@@ -21,6 +22,7 @@ const CTRL: Record<string, string> = {
   "\x07": "g", // ctrl+g editor
   "\x12": "r", // ctrl+r diff
   "\x15": "u", // ctrl+u clear input
+  "\x19": "y", // ctrl+y copy session id
   "\x01": "a",
   "\x02": "b",
   "\x05": "e",

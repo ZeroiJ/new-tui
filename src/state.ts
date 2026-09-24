@@ -159,6 +159,8 @@ export interface UIState {
   contextPct: number | null;
   /** server-pushed toast (tui.toast.show) */
   toast: ToastState | null;
+  /** fire a desktop notification when a turn completes (/notify toggles) */
+  notifyOnDone: boolean;
   /** opencode message/part store — the authoritative model behind the view */
   messages: Map<string, MessageRecord>;
   parts: Map<string, PartRecord>;
@@ -214,6 +216,7 @@ export function createState(cwd: string, version: string): UIState {
     contextLimit: 0,
     contextPct: null,
     toast: null,
+    notifyOnDone: false,
     messages: new Map(),
     parts: new Map(),
   };

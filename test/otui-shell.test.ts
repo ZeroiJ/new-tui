@@ -76,8 +76,9 @@ describe("otui shell", () => {
     setup.mockInput.pressEnter();
     setup.mockInput.pressEnter({ shift: true });
     setup.mockInput.pressEscape();
+    setup.mockInput.pressKey("y", { ctrl: true });
     await setup.renderOnce();
-    expect(keys.map((k) => k.kind)).toEqual(["down", "ctrl", "tab", "enter", "enter", "esc"]);
+    expect(keys.map((k) => k.kind)).toEqual(["down", "ctrl", "tab", "enter", "enter", "esc", "copy"]);
     expect(keys.find((k) => k.kind === "tab")?.shift).toBe(true);
     // shift+enter is a newline, not a submit — distinguished via the real event
     const enters = keys.filter((k) => k.kind === "enter");

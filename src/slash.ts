@@ -191,6 +191,12 @@ export async function runSlash(app: App, cmd: string, arg: string): Promise<stri
       return null;
     }
 
+    case "/notify": {
+      s.notifyOnDone = !s.notifyOnDone;
+      s.transcript.push({ role: "system", text: `Desktop notification on turn completion: ${s.notifyOnDone ? "on" : "off"}` });
+      return null;
+    }
+
     case "/diff":
       await app.openDiffOverlay();
       return null;

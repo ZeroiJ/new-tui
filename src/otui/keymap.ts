@@ -60,6 +60,7 @@ export function installKeymap(renderer: CliRenderer, onKey: OnKey): InstalledKey
       { name: "app.openDiff", run: forward({ kind: "ctrl", key: "r" }) },
       { name: "app.clearInput", run: forward({ kind: "ctrl", key: "u" }) },
       { name: "app.quit", run: forward({ kind: "ctrl", key: "d" }) },
+      { name: "app.copySession", run: forward({ kind: "copy" }) },
     ],
     bindings: [
       { key: "up", cmd: "app.navigateUp" },
@@ -76,6 +77,7 @@ export function installKeymap(renderer: CliRenderer, onKey: OnKey): InstalledKey
       { key: "ctrl+r", cmd: "app.openDiff" },
       { key: "ctrl+u", cmd: "app.clearInput" },
       { key: "ctrl+d", cmd: "app.quit" },
+      { key: "ctrl+y", cmd: "app.copySession" },
     ],
   });
 

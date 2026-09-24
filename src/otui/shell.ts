@@ -403,6 +403,16 @@ export class OtuiShell {
     return { cols: this.renderer.terminalWidth, rows: this.renderer.terminalHeight };
   }
 
+  /** Copy text to the system clipboard via OSC 52 (works over SSH). */
+  copyToClipboard(text: string): boolean {
+    return this.renderer.copyToClipboardOSC52(text);
+  }
+
+  /** Fire a desktop notification (best effort). */
+  notify(title: string, message: string): boolean {
+    return this.renderer.triggerNotification(message, title);
+  }
+
   /** Release the terminal (external editor), then come back. */
   suspend() {
     this.renderer.destroy();

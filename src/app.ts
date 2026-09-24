@@ -475,6 +475,10 @@ export class App {
         s.tokenDisplay = s.turnTokens;
         // completion stamp: "✓ done in 6.2s · 389 tokens", fades after ~3s
         s.stamp = { at: Date.now(), durMs: Date.now() - t0, tokens: s.turnTokens, until: Date.now() + 3000 };
+        // optional desktop notification for long-running turns (/notify)
+        if (s.notifyOnDone) {
+          this.shell?.notify("ctui", `done in ${((Date.now() - t0) / 1000).toFixed(1)}s · ${s.turnTokens} tokens`);
+        }
         void this.refreshContext();
       }
     }
@@ -611,6 +615,17 @@ export class App {
   async handleKey(key: Key) {
     const s = this.s;
     this.ctrlCCount = key.kind === "ctrl" && key.key === "c" ? this.ctrlCCount + 1 : 0;
+
+    // ctrl+y — copy the session id to the system clipboard (OSC 52)
+    if (key.kind === "copy") {
+      if (this.shell?.copyToClipboard(this.sessionID)) {
+        s.statusMsg = `session id copied: ${this.sessionID}`;
+      } else {
+        s.statusMsg = "clipboard not available in this terminal";
+      }
+      this.draw();
+      return;
+    }
 
     // diff overlay: ↑/↓ scroll, enter pages, esc/ctrl+r closes
     if (s.diffOpen) {

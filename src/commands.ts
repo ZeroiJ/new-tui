@@ -29,6 +29,7 @@ export const SLASH_COMMANDS: SlashCmd[] = [
   { name: "/run-everything", desc: "Toggle Run Everything" },
   { name: "/auto-review", desc: "Auto-review status" },
   { name: "/spinner", desc: "Pick the thinking animation (/spinner <name>)" },
+  { name: "/notify", desc: "Toggle desktop notification when a turn completes" },
   { name: "/diff", desc: "Show session diff" },
   { name: "/help", desc: "Show help" },
   { name: "/quit", desc: "Quit (Ctrl+C twice)" },
