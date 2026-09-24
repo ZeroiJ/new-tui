@@ -8,28 +8,29 @@ A Bun + TypeScript TUI that pixel-matches `cursor-agent`'s interactive terminal
 (`opencode2`, API `2.0.8`) via `@opencode/client` — sessions, streaming,
 models, agents, permissions, MCP.
 
-## Renderers (experimental: OpenTUI)
+## Renderer: OpenTUI
 
-The TUI can draw itself with two frame engines behind one `UIState`:
+The TUI draws itself with [OpenTUI](https://opentui.com) — the same native Zig
+core opencode's own TUI uses (the docs even say "OpenTUI powers OpenCode in
+production"). `@opentui/core@0.5.12` (prebuilt native core, no Zig toolchain
+needed) and `@opentui/keymap@0.5.12` are the only new dependencies.
 
-| `--renderer` | Engine | Notes |
-|---|---|---|
-| `ansi` (default) | our own string renderer | full-screen redraw, hand-rolled key decoding |
-| `opentui` | [OpenTUI](https://opentui.com) — the same native Zig core opencode's own TUI uses | cell-diff rendering, parsed key events, native editor, `ScrollBox` transcript |
+What that buys, in place of the old hand-rolled string renderer:
+
+- **cell-diff rendering** instead of full-screen redraws
+- **parsed key events** via `keyInput` + `@opentui/keymap` layers — the
+  hand-rolled escape decoder (and its `splitKeys` bug class) is gone
+- **real components**: `Textarea` (composer, block cursor), `MarkdownRenderable`
+  (assistant answers with highlighted code fences), `DiffRenderable` (ctrl+r),
+  `ScrollBox` (transcript), clipboard (OSC 52) and desktop notifications
+- **headless tests** via `createTestRenderer` + `mockInput`
+
+`UIState` is still the single source of truth; `src/otui/` turns it into a
+renderable tree. Control keys are owned by keymap layers; printable keys flow to
+the focused `Textarea` and are mirrored back into state.
 
 ```bash
-bun src/main.ts --renderer=opentui    # or CTUI_RENDERER=opentui
-bun src/main.ts                       # ansi (default)
-```
-
-Both render the same UIState through the same row builders: `src/otui/ansi.ts`
-translates the existing SGR output into OpenTUI styled-text chunks, so the
-cursor-agent look is identical and `src/ui/*` keeps working for either engine.
-Control keys (arrows, ctrl+*, Tab, Esc, Enter) are intercepted before the
-OpenTUI `Textarea`, which owns plain editing and reports back into state.
-
-```bash
-bun test                              # headless renderer + input regression
+bun test                              # headless frame + input regression
 ```
 
 ## Run
@@ -165,7 +166,8 @@ re-implementations of the same motion — same cycle durations from their
 | Ctrl+L | clear screen |
 | Ctrl+G | edit input in `$EDITOR` |
 | Ctrl+O | expand/collapse tool output |
-| Ctrl+R | review working-tree changes (diff overlay) |
+| Ctrl+R | review working-tree changes (native diff overlay) |
+| Ctrl+Y | copy the session id to the clipboard (OSC 52) |
 | Ctrl+C (streaming) | interrupt opencode turn |
 | Ctrl+C ×2 (empty) | quit |
 | ↑/↓ | history / popup navigation |
@@ -175,7 +177,7 @@ re-implementations of the same motion — same cycle durations from their
 `/model`, `/agent`, `/plan`, `/ask`, `/compact`, `/fork`, `/new`, `/sessions`,
 `/ls`, `/resume`, `/clear`, `/goal`, `/add-dir`, `/mcp`, `/sandbox`,
 `/run-everything` (auto-approve toggle), `/auto-review`, `/spinner`,
-`/diff`, `/help`, `/quit`
+`/notify` (desktop notification on turn completion), `/diff`, `/help`, `/quit`
 
 ### Sessions are project-scoped
 
@@ -234,16 +236,19 @@ src/
     events.ts      event → state dispatch table + server→TUI commands
     index.ts       barrel
 
-  ui/              everything that draws
-    render.ts      frame assembly + cursor parking
-    transcript.ts  prompt blocks, thread lines, tool lines, output collapse
+  otui/            the OpenTUI frame engine (UIState → renderable tree)
+    shell.ts       renderer lifecycle, the renderable tree, sync(state)
+    keymap.ts      @opentui/keymap layers (global control keys + popup layer)
+    transcript.ts  per-item renderables: user blocks, Markdown, tool gutter
+    ansi.ts        SGR → OpenTUI styled-text bridge (used by the row builders)
+
+  ui/              row builders shared with the frame engine
     composer.ts    input box, placeholder, hints
     status.ts      status line, completion stamp, toasts
-    popups.ts      slash + model popups (scrolling)
-    overlays.ts    permission prompt, diff review
+    popups.ts      slash + model + sessions popups (scrolling)
+    overlays.ts    permission prompt
     theme.ts       colours and escape sequences
     text.ts        wrapping, ANSI stripping, duration formatting
-    keys.ts        terminal key decoding
 ```
 
 Two ideas drive the design:
