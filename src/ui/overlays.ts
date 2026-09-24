@@ -1,4 +1,6 @@
-// Permission prompt and the ctrl+r working-tree diff overlay.
+// Permission prompt rows. The ctrl+r diff overlay is rendered natively by the
+// OpenTUI shell (per-file DiffRenderable), so only the permission menu lives
+// here as rows.
 
 import { bold, dim } from "./theme";
 import type { UIState } from "../state";
@@ -20,26 +22,4 @@ export function permissionRows(s: UIState): string[] {
   const hint = "ctrl+r to review changed files";
   out.push(dim(" " + " ".repeat(Math.max(1, s.cols - hint.length - 2)) + hint));
   return out;
-}
-
-/** ctrl+r diff overlay — full-screen review of working-tree changes. */
-export function diffOverlay(s: UIState): string {
-  const W = s.cols;
-  const out: string[] = [
-    "\x1b[2J\x1b[H",
-    `  ${bold("Changed files")} ${dim("(↑/↓ scroll, esc close)")}`,
-    "",
-  ];
-  const room = Math.max(3, s.rows - 4);
-  const scroll = Math.min(s.diffScroll, Math.max(0, s.diffLines.length - room));
-  for (const ln of s.diffLines.slice(scroll, scroll + room)) {
-    const c = ln.startsWith("+") ? `\x1b[32m${ln}\x1b[0m`
-      : ln.startsWith("-") ? `\x1b[31m${ln}\x1b[0m`
-      : ln.startsWith("@@") ? `\x1b[36m${ln}\x1b[0m`
-      : ln.startsWith(" ") ? dim(ln)
-      : ln;
-    out.push("  " + (c.length > W ? c.slice(0, W) : c));
-  }
-  if (s.diffLines.length === 0) out.push(dim("  (no changes)"));
-  return out.join("\n");
 }

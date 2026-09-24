@@ -29,10 +29,10 @@ import { TranscriptView } from "./transcript";
 import { modelPopup, sessionsPopup, slashPopup } from "../ui/popups";
 import { hintsRows, statusRows } from "../ui/status";
 import { metaRows } from "../ui/composer";
-import { diffOverlay, permissionRows } from "../ui/overlays";
+import { permissionRows } from "../ui/overlays";
 import { TIPS } from "../tips";
 import type { UIState } from "../state";
-import type { Key } from "../ui/keys";
+import type { Key } from "../key";
 
 /** Composer surface, matching theme.ts BOX_BG (52,52,52). */
 const BOX_BG = RGBA.fromInts(52, 52, 52);

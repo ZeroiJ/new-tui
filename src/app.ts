@@ -2,9 +2,7 @@
 // the opencode event pump. Everything opencode-specific lives in ./opencode/*,
 // everything visual in ./ui/*.
 
-import { ANSI } from "./ui/theme";
-import { render } from "./ui/render";
-import { splitKeys, takeIncompleteEscape, type Key } from "./ui/keys";
+import type { Key } from "./key";
 import { commandList } from "./commands";
 import { runSlash } from "./slash";
 import { createState, freezeToolTimers, type UIState, type SessionItem } from "./state";
@@ -20,8 +18,6 @@ export interface AppOptions {
   prompt?: string;
   resume?: string;
   continueLast?: boolean;
-  /** frame engine: "ansi" (default, string renderer) or "opentui" (native) */
-  renderer?: "ansi" | "opentui";
 }
 
 export class App {
@@ -36,14 +32,9 @@ export class App {
   autoApprove = false;
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private tipTimer: ReturnType<typeof setInterval> | null = null;
-  private early: string[] = [];
-  private earlyListener: ((b: string) => void) | null = null;
-  private pending = "";
-  private pendingTimer: ReturnType<typeof setTimeout> | null = null;
   private cleanup: () => void = () => {};
-  /** OpenTUI shell — present when the native renderer is selected */
+  /** OpenTUI shell — the frame engine and input source */
   private shell: OtuiShell | null = null;
-  private useOtui = false;
 
   constructor(opts: AppOptions) {
     this.opts = opts;
@@ -55,61 +46,20 @@ export class App {
   // ----- lifecycle ---------------------------------------------------------
 
   async start() {
-    const s = this.s;
-    this.useOtui = this.opts.renderer === "opentui";
-
-    if (this.useOtui) {
-      await this.bootstrap();
-      this.shell = await OtuiShell.create({
-        onKey: (key) => void this.handleKey(key),
-        onEdit: () => this.onComposerEdit(),
-      });
-      this.adoptShellSize();
-      this.draw();
-      this.startTimers();
-      void this.startEventPump();
-      this.cleanup = () => this.shell?.destroy();
-      process.on("exit", this.cleanup);
-      process.on("SIGINT", () => {
-        this.cleanup();
-        process.exit(0);
-      });
-      return;
-    }
-
-    // Buffer keystrokes typed during async bootstrap so nothing is lost.
-    process.stdin.setRawMode?.(true);
-    process.stdin.resume();
-    process.stdin.setEncoding("utf8");
-    this.earlyListener = (b: string) => {
-      this.early.push(b);
-    };
-    process.stdin.on("data", this.earlyListener);
-
     await this.bootstrap();
-
-    process.stdout.write(ANSI.altOn);
-    this.cleanup = () => {
-      process.stdout.write(ANSI.showCursor + ANSI.altOff);
-    };
+    this.shell = await OtuiShell.create({
+      onKey: (key) => void this.handleKey(key),
+      onEdit: () => this.onComposerEdit(),
+    });
+    this.adoptShellSize();
+    this.draw();
+    this.startTimers();
+    void this.startEventPump();
+    this.cleanup = () => this.shell?.destroy();
     process.on("exit", this.cleanup);
     process.on("SIGINT", () => {
       this.cleanup();
       process.exit(0);
-    });
-
-    this.draw();
-    this.startTimers();
-    void this.startEventPump();
-
-    process.stdin.on("data", (buf: string) => void this.onData(buf));
-    process.stdin.removeListener("data", this.earlyListener);
-    for (const b of this.early.splice(0)) void this.onData(b);
-
-    process.stdout.on("resize", () => {
-      s.cols = process.stdout.columns ?? 120;
-      s.rows = process.stdout.rows ?? 36;
-      this.draw();
     });
   }
 
@@ -880,27 +830,19 @@ export class App {
     const editor = process.env.EDITOR ?? process.env.VISUAL ?? "vi";
     const tmp = `/tmp/cursor-opencode-${Date.now()}.md`;
     await Bun.write(tmp, s.input);
-    if (this.shell) {
-      this.shell.suspend(); // release the terminal for the editor
-      this.shell = null;
-    } else {
-      process.stdout.write(ANSI.showCursor + ANSI.altOff);
-    }
+    this.shell?.suspend(); // release the terminal for the editor
+    this.shell = null;
     try {
       const proc = Bun.spawn([editor, tmp], { stdin: "inherit", stdout: "inherit", stderr: "inherit" });
       await proc.exited;
       s.input = await Bun.file(tmp).text().catch(() => "");
       s.cursor = s.input.length;
     } finally {
-      if (this.useOtui) {
-        this.shell = await OtuiShell.create({
-          onKey: (key) => void this.handleKey(key),
-          onEdit: () => this.onComposerEdit(),
-        });
-        this.adoptShellSize();
-      } else {
-        process.stdout.write(ANSI.altOn);
-      }
+      this.shell = await OtuiShell.create({
+        onKey: (key) => void this.handleKey(key),
+        onEdit: () => this.onComposerEdit(),
+      });
+      this.adoptShellSize();
       this.draw();
     }
   }
@@ -916,26 +858,6 @@ export class App {
       this.cleanup();
     }
     process.exit(0);
-  }
-
-  private async onData(buf: string) {
-    const combined = this.pending + buf;
-    const { ready, pending } = takeIncompleteEscape(combined);
-    this.pending = pending;
-    if (pending) {
-      // lone ESC arrives as its own read — flush it if nothing follows
-      if (this.pendingTimer) clearTimeout(this.pendingTimer);
-      this.pendingTimer = setTimeout(() => {
-        const tail = this.pending;
-        this.pending = "";
-        void this.handleKeys(tail);
-      }, 40);
-    }
-    if (ready) await this.handleKeys(ready);
-  }
-
-  private async handleKeys(data: string) {
-    for (const key of splitKeys(data)) await this.handleKey(key);
   }
 
   // ----- misc --------------------------------------------------------------
@@ -960,11 +882,7 @@ export class App {
   }
 
   draw() {
-    if (this.shell) {
-      this.shell.sync(this.s);
-      return;
-    }
-    process.stdout.write(render(this.s));
+    this.shell?.sync(this.s);
   }
 
   /** Run an initial prompt (CLI arg) without waiting for the user. */

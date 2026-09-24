@@ -10,7 +10,7 @@
   "scripts": {
     "start": "bun src/main.ts",
     "dev": "bun --watch src/main.ts",
-    "build": "bun build src/main.ts --outdir dist --target bun"
+    "build": "bun build src/main.ts --outdir dist --target bun --external '@opentui/core-*'"
   },
   "dependencies": {
     "@opencode/client": "2.0.8",

@@ -18,7 +18,7 @@
 import type { Keymap } from "@opentui/keymap";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import type { CliRenderer, KeyEvent, Renderable } from "@opentui/core";
-import type { Key } from "../ui/keys";
+import type { Key } from "../key";
 
 export type OnKey = (key: Key) => void | Promise<void>;
 

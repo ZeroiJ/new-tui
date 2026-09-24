@@ -8,7 +8,7 @@ import { createTestRenderer } from "@opentui/core/testing";
 import { OtuiShell, mapKey } from "../src/otui/shell";
 import { installKeymap } from "../src/otui/keymap";
 import { createState, type UIState } from "../src/state";
-import type { Key } from "../src/ui/keys";
+import type { Key } from "../src/key";
 
 function setupApp() {
   const s: UIState = createState("/tmp/project", "2.0.15");
