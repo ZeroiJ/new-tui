@@ -844,12 +844,15 @@ export class App {
     try {
       const diffs = await oc.vcsDiff(s.cwd);
       const lines: string[] = [];
+      const files: { file: string; patch: string; status: string; additions: number; deletions: number }[] = [];
       for (const d of diffs) {
         lines.push(`${d.file}  (${d.status} +${d.additions} -${d.deletions})`);
         for (const pl of d.patch.split("\n")) lines.push(pl);
         lines.push("");
+        files.push({ file: d.file, patch: d.patch, status: d.status, additions: d.additions, deletions: d.deletions });
       }
       s.diffLines = lines;
+      s.diffFiles = files;
       s.diffScroll = 0;
       s.diffOpen = true;
     } catch (e) {

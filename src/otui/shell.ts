@@ -10,6 +10,7 @@
 
 import {
   BoxRenderable,
+  DiffRenderable,
   RGBA,
   ScrollBoxRenderable,
   TextRenderable,
@@ -33,9 +34,21 @@ import { TIPS } from "../tips";
 import type { UIState } from "../state";
 import type { Key } from "../ui/keys";
 
-/** The composer surface, matching theme.ts BOX_BG (52,52,52). */
+/** Composer surface, matching theme.ts BOX_BG (52,52,52). */
 const BOX_BG = RGBA.fromInts(52, 52, 52);
 const ACCENT = RGBA.fromInts(168, 181, 230);
+
+/** Best-effort tree-sitter filetype from a path's extension (for diff/code highlighting). */
+function filetypeFor(file: string): string | undefined {
+  const ext = file.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  const map: Record<string, string> = {
+    ts: "typescript", tsx: "tsx", js: "javascript", jsx: "jsx",
+    mts: "typescript", cts: "typescript", mjs: "javascript", cjs: "javascript",
+    md: "markdown", zig: "zig",
+  };
+  return map[ext];
+}
 
 /** Translate an OpenTUI key event into the Key shape the app already handles. */
 export function mapKey(key: KeyEvent): Key | null {
@@ -97,7 +110,8 @@ export class OtuiShell {
   private hintText!: TextRenderable;
   private meta!: TextRenderable;
   private extra!: TextRenderable;
-  private overlay!: TextRenderable;
+  private overlay!: BoxRenderable;
+  private overlayScroll!: ScrollBoxRenderable;
 
   private lastInput = "";
   private lastRows = 0;
@@ -165,13 +179,26 @@ export class OtuiShell {
     this.meta = text("meta");
     this.extra = text("extra");
 
-    this.overlay = text("overlay");
-    this.overlay.position = "absolute";
-    this.overlay.top = 0;
-    this.overlay.left = 0;
-    this.overlay.width = "100%";
-    this.overlay.height = "100%";
-    this.overlay.visible = false;
+    // Full-screen diff overlay: per-file DiffRenderables in a scrollable stack.
+    this.overlay = new BoxRenderable(r, {
+      id: "overlay",
+      position: "absolute",
+      top: 0,
+      left: 0,
+      width: "100%",
+      height: "100%",
+      flexDirection: "column",
+      backgroundColor: RGBA.fromHex("#0d0d0f"),
+      visible: false,
+    });
+    this.overlayScroll = new ScrollBoxRenderable(r, {
+      id: "overlayScroll",
+      width: "100%",
+      height: "100%",
+      scrollY: true,
+      verticalScrollbarOptions: { visible: false },
+    });
+    this.overlay.add(this.overlayScroll);
 
     r.root.add(this.head);
     r.root.add(this.scroll);
@@ -205,7 +232,7 @@ export class OtuiShell {
     const r = this.renderer;
     if (s.diffOpen) {
       this.overlay.visible = true;
-      this.overlay.content = ansiToStyled(diffOverlay(s));
+      this.syncDiff(s);
       return;
     }
     if (this.overlay.visible) this.overlay.visible = false;
@@ -269,6 +296,67 @@ export class OtuiShell {
     }
     void r;
   }
+
+  /** Reconcile per-file DiffRenderables in the overlay for the current diff. */
+  private syncDiff(s: UIState) {
+    const files = s.diffFiles;
+    // drop stale per-file views
+    while (this.diffViews.length > files.length) {
+      const v = this.diffViews.pop();
+      if (v) this.overlayScroll.remove(v.root);
+    }
+    for (let i = 0; i < files.length; i++) {
+      const d = files[i];
+      let v = this.diffViews[i];
+      if (!v) {
+        const root = new BoxRenderable(this.renderer, { id: `diff-${i}`, width: "100%", flexDirection: "column" });
+        const header = new TextRenderable(this.renderer, {
+          content: `  ${d.file}  (${d.status} +${d.additions} -${d.deletions})`,
+          fg: RGBA.fromInts(168, 181, 230),
+        });
+        const view = new DiffRenderable(this.renderer, {
+          width: "100%",
+          diff: d.patch,
+          view: "unified",
+          filetype: filetypeFor(d.file),
+          showLineNumbers: true,
+          addedBg: RGBA.fromHex("#12351f"),
+          removedBg: RGBA.fromHex("#3a1a1a"),
+          addedSignColor: RGBA.fromHex("#22c55e"),
+          removedSignColor: RGBA.fromHex("#ef4444"),
+        });
+        root.add(header);
+        root.add(view);
+        v = { sig: "", root };
+        this.diffViews[i] = v;
+        this.overlayScroll.add(v.root);
+        continue;
+      }
+      const sig = `${d.file}\u0001${d.patch.length}\u0001${d.additions}\u0001${d.deletions}`;
+      if (v.sig === sig) continue;
+      const header = v.root.getChildren()[0] as TextRenderable;
+      const view = v.root.getChildren()[1] as DiffRenderable;
+      header.content = `  ${d.file}  (${d.status} +${d.additions} -${d.deletions})`;
+      view.diff = d.patch;
+      v.sig = sig;
+    }
+    if (files.length === 0 && !this.diffEmptyShown) {
+      this.diffEmptyShown = true;
+      const t = new TextRenderable(this.renderer, { content: "  (no changes)", fg: RGBA.fromInts(140, 140, 140) });
+      this.overlayScroll.add(t);
+    } else if (files.length > 0 && this.diffEmptyShown) {
+      this.diffEmptyShown = false;
+      // remove the "(no changes)" placeholder if present
+      const kids = this.overlayScroll.getChildren();
+      for (const k of kids) {
+        if (k instanceof TextRenderable) this.overlayScroll.remove(k);
+      }
+    }
+    this.overlayScroll.scrollTop = s.diffScroll;
+  }
+
+  private diffViews: { sig: string; root: BoxRenderable }[] = [];
+  private diffEmptyShown = false;
 
   private syncComposer(s: UIState) {
     const lines = s.input.split("\n").length;

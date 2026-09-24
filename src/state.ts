@@ -140,6 +140,8 @@ export interface UIState {
   /** ctrl+r diff overlay */
   diffOpen: boolean;
   diffLines: string[];
+  /** structured per-file diffs (opentui DiffRenderable path) */
+  diffFiles: { file: string; patch: string; status: string; additions: number; deletions: number }[];
   diffScroll: number;
   /** pending inbox tasks (shown under box when > 0) */
   taskCount: number;
@@ -202,6 +204,7 @@ export function createState(cwd: string, version: string): UIState {
     toolNameById: new Map(),
     diffOpen: false,
     diffLines: [],
+    diffFiles: [],
     diffScroll: 0,
     taskCount: 0,
     followUp: false,
