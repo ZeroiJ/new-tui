@@ -6,6 +6,7 @@ import { describe, expect, test } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 
 import { OtuiShell, mapKey } from "../src/otui/shell";
+import { installKeymap } from "../src/otui/keymap";
 import { createState, type UIState } from "../src/state";
 import type { Key } from "../src/ui/keys";
 
@@ -97,6 +98,58 @@ describe("otui shell", () => {
     const frame = setup.captureCharFrame();
     expect(frame).toContain("/sessions");
     expect(frame).toContain("A project session");
+
+    setup.renderer.destroy();
+  });
+
+  test("popup layer activates only while a picker is open", async () => {
+    const setup = await createTestRenderer({ width: 100, height: 30, exitOnCtrlC: false, kittyKeyboard: true });
+    const s = setupApp();
+    const keys: Key[] = [];
+    const shell = await OtuiShell.create(
+      { onKey: (key) => { keys.push(key); }, onEdit: () => {} },
+      setup.renderer,
+    );
+
+    // no popup: up/down/escape route via the global layer
+    shell.sync(s);
+    setup.mockInput.pressArrow("up");
+    setup.mockInput.pressEscape();
+    await setup.renderOnce();
+    expect(keys.map((k) => k.kind)).toEqual(["up", "esc"]);
+
+    // open a picker: nav still works, and the popup layer is now active
+    keys.length = 0;
+    s.slashOpen = true;
+    s.slashFilter = "/";
+    shell.sync(s);
+    setup.mockInput.pressArrow("down");
+    setup.mockInput.pressEnter();
+    await setup.renderOnce();
+    // the picker commits on enter (routes {kind:"enter"} via popup.commit)
+    expect(keys.map((k) => k.kind)).toEqual(["down", "enter"]);
+
+    setup.renderer.destroy();
+  });
+
+  test("popup keymap layer activates only while a picker is open", async () => {
+    const setup = await createTestRenderer({ width: 80, height: 20, exitOnCtrlC: false, kittyKeyboard: true });
+    const seen: string[] = [];
+    const km = installKeymap(setup.renderer, (k) => { seen.push(k.kind); });
+    const names = () => km.keymap.getCommands().map((c) => c.name);
+
+    // closed: only the global app.* layer is active
+    expect(names().some((n) => n.startsWith("popup."))).toBe(false);
+    expect(names()).toContain("app.navigateDown");
+
+    // open: the popup layer takes precedence, global layer still falls through
+    km.setPopupActive(true);
+    expect(names()[0]).toBe("popup.navigateUp");
+    expect(names()).toContain("popup.commit");
+    expect(names()).toContain("app.navigateDown"); // printable fall-through owner
+
+    km.setPopupActive(false);
+    expect(names().some((n) => n.startsWith("popup."))).toBe(false);
 
     setup.renderer.destroy();
   });

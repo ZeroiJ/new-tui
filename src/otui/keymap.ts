@@ -27,8 +27,13 @@ export type OnKey = (key: Key) => void | Promise<void>;
  * The keymap's host uses prependListener and matched bindings
  * preventDefault+stopPropagation, so consumed control keys never reach the
  * focused editor, and printable keys pass straight through to it.
+ *
+ * Returns the keymap plus a setPopupActive toggle for the popup navigation
+ * layer. Both enter/tab semantic commands read the real event's shift flag, so
+ * behaviour is correct whether or not the matcher treats a bare "return" as
+ * matching shifted returns.
  */
-export function installKeymap(renderer: CliRenderer, onKey: OnKey): Keymap<Renderable, KeyEvent> {
+export function installKeymap(renderer: CliRenderer, onKey: OnKey): InstalledKeymap {
   const keymap = createDefaultOpenTuiKeymap(renderer);
   const forward = (key: Key) => () => {
     void onKey(key);
@@ -74,5 +79,40 @@ export function installKeymap(renderer: CliRenderer, onKey: OnKey): Keymap<Rende
     ],
   });
 
-  return keymap;
+  // A second, higher-priority layer models "a popup owns navigation while it
+  // is open". It binds only the keys a popup needs (nav + commit + dismiss);
+  // every other key (notably printable characters, which drive the live filter
+  // in the composer) falls through to the global layer / focused editor. The
+  // layer's `enabled` predicate reads a mutable flag via setPopupActive, so it
+  // activates/deactivates dynamically without re-registering.
+  let popupOpen = false;
+  keymap.registerLayer({
+    priority: 10,
+    enabled: () => popupOpen,
+    commands: [
+      { name: "popup.navigateUp", run: forward({ kind: "up" }) },
+      { name: "popup.navigateDown", run: forward({ kind: "down" }) },
+      { name: "popup.commit", run: forwardEnter },
+      { name: "popup.dismiss", run: forward({ kind: "esc" }) },
+    ],
+    bindings: [
+      { key: "up", cmd: "popup.navigateUp" },
+      { key: "down", cmd: "popup.navigateDown" },
+      { key: "return", cmd: "popup.commit" },
+      { key: "shift+return", cmd: "popup.commit" },
+      { key: "escape", cmd: "popup.dismiss" },
+    ],
+  });
+
+  return {
+    keymap,
+    setPopupActive(active: boolean) {
+      popupOpen = active;
+    },
+  };
+}
+
+export interface InstalledKeymap {
+  keymap: Keymap<Renderable, KeyEvent>;
+  setPopupActive: (active: boolean) => void;
 }

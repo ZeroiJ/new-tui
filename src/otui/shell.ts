@@ -20,7 +20,7 @@ import {
   type PasteEvent,
   type Renderable,
 } from "@opentui/core";
-import type { Keymap } from "@opentui/keymap";
+import type { InstalledKeymap } from "./keymap";
 
 import { ansiToStyled, ansiRowsToStyled } from "./ansi";
 import { installKeymap } from "./keymap";
@@ -103,7 +103,7 @@ export class OtuiShell {
   private lastRows = 0;
   private lastCols = 0;
   private suppressEdit = false;
-  private keymap: Keymap<Renderable, KeyEvent> | null = null;
+  private keymap: InstalledKeymap | null = null;
 
   private build() {
     const r = this.renderer;
@@ -225,6 +225,8 @@ export class OtuiShell {
           ? slashPopup(s)
           : [];
     this.popup.content = popupRows.length ? ansiRowsToStyled(popupRows) : "";
+    // popup nav layer is active only while a picker is open
+    this.keymap?.setPopupActive(popupRows.length > 0);
 
     this.hints.content = ansiRowsToStyled(hintsRows(s));
     this.status.content = ansiRowsToStyled(statusRows(s, Date.now()));
