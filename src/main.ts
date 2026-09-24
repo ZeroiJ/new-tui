@@ -20,7 +20,9 @@ interface Args {
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { prompt: "", mode: null, resume: null, cont: false, model: null, workspace: process.cwd(), print: false, trust: false, updateCheck: process.env.CTUI_NO_UPDATE_CHECK !== "1", renderer: process.env.CTUI_RENDERER === "opentui" ? "opentui" : "ansi" };
+  // Default renderer is the OpenTUI engine; CTUI_RENDERER=ansi or --renderer=ansi
+  // opts back into the legacy string renderer.
+  const a: Args = { prompt: "", mode: null, resume: null, cont: false, model: null, workspace: process.cwd(), print: false, trust: false, updateCheck: process.env.CTUI_NO_UPDATE_CHECK !== "1", renderer: process.env.CTUI_RENDERER === "ansi" ? "ansi" : "opentui" };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
