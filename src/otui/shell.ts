@@ -18,9 +18,12 @@ import {
   type CliRenderer,
   type KeyEvent,
   type PasteEvent,
+  type Renderable,
 } from "@opentui/core";
+import type { Keymap } from "@opentui/keymap";
 
 import { ansiToStyled, ansiRowsToStyled } from "./ansi";
+import { installKeymap } from "./keymap";
 import { transcriptRows } from "../ui/transcript";
 import { modelPopup, sessionsPopup, slashPopup } from "../ui/popups";
 import { hintsRows, statusRows } from "../ui/status";
@@ -52,16 +55,6 @@ export function mapKey(key: KeyEvent): Key | null {
   const seq = key.sequence ?? "";
   if (seq && [...seq].length === 1) return { kind: "char", ch: seq };
   return null;
-}
-
-/**
- * Keys the shell consumes before the focused Textarea sees them. Everything
- * else (printable characters, backspace, delete, left/right) is handled by the
- * editor natively and reported back through onEdit.
- */
-function isControlKey(key: KeyEvent): boolean {
-  if (["up", "down", "tab", "escape", "return"].includes(key.name)) return true;
-  return key.ctrl;
 }
 
 export interface ShellCallbacks {
@@ -110,6 +103,7 @@ export class OtuiShell {
   private lastRows = 0;
   private lastCols = 0;
   private suppressEdit = false;
+  private keymap: Keymap<Renderable, KeyEvent> | null = null;
 
   private build() {
     const r = this.renderer;
@@ -192,12 +186,12 @@ export class OtuiShell {
 
     this.input.focus();
 
-    r.keyInput.on("keypress", (key: KeyEvent) => {
-      if (!isControlKey(key)) return; // the editor owns plain typing
-      const mapped = mapKey(key);
-      if (mapped) void this.cb.onKey(mapped);
-      key.preventDefault();
-    });
+    // Workstream #1: keymap owns the control keys. The host prepends its
+    // listener, and matched bindings preventDefault+stopPropagation, so
+    // consumed control keys never reach the focused editor; printable keys
+    // pass through to it, and its callbacks mirror edits back into state.
+    this.keymap = installKeymap(r, this.cb.onKey);
+
     r.keyInput.on("paste", (event: PasteEvent) => {
       // bracketed paste is terminal input; let the focused editor take it
       if (event.bytes.length) this.cb.onEdit();

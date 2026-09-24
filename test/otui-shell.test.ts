@@ -36,8 +36,11 @@ describe("otui shell", () => {
     setup.renderer.destroy();
   });
 
-  test("composer edits reach app state, control keys are routed", async () => {
-    const setup = await createTestRenderer({ width: 100, height: 30, exitOnCtrlC: false });
+  test("composer edits reach app state, control keys are routed via keymap", async () => {
+    // kittyKeyboard makes a bare ESC unambiguous, so pressEscape() produces an
+    // "escape" keypress immediately instead of being held as a sequence prefix
+    // (a real terminal flushes it on a timer; the harness does not).
+    const setup = await createTestRenderer({ width: 100, height: 30, exitOnCtrlC: false, kittyKeyboard: true });
     const s = setupApp();
     const keys: Key[] = [];
 
@@ -61,14 +64,20 @@ describe("otui shell", () => {
     await setup.mockInput.typeText("hi");
     expect(s.input).toBe("hi");
 
-    // control keys are intercepted before the editor
+    // control keys are consumed by the keymap before the editor
     setup.mockInput.pressArrow("down");
     setup.mockInput.pressKey("o", { ctrl: true });
     setup.mockInput.pressTab({ shift: true });
     setup.mockInput.pressEnter();
+    setup.mockInput.pressEnter({ shift: true });
+    setup.mockInput.pressEscape();
     await setup.renderOnce();
-    expect(keys.map((k) => k.kind)).toEqual(["down", "ctrl", "tab", "enter"]);
+    expect(keys.map((k) => k.kind)).toEqual(["down", "ctrl", "tab", "enter", "enter", "esc"]);
     expect(keys.find((k) => k.kind === "tab")?.shift).toBe(true);
+    // shift+enter is a newline, not a submit — distinguished via the real event
+    const enters = keys.filter((k) => k.kind === "enter");
+    expect(enters[0].shift).toBe(false); // plain enter → submit
+    expect(enters[1].shift).toBe(true); // shift+enter → newline
 
     setup.renderer.destroy();
   });
