@@ -2,6 +2,7 @@
 // Everything this TUI knows about the opencode service is behind this barrel.
 
 export * from "./client";
+export * from "./instance";
 export * from "./session";
 export * from "./message";
 export * from "./catalog";

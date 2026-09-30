@@ -123,12 +123,20 @@ export class App {
 
   async resolveModel() {
     const s = this.s;
+    // Each step is independent: on a freshly-provisioned instance the session
+    // may not report a model yet, and we still want the default model name
+    // rather than leaving the line as "Auto".
+    let mref: { providerID: string; id: string } | undefined;
     try {
       const sess = await oc.getSession(this.sessionID);
-      const mref = sess["model"] as { providerID: string; id: string } | undefined;
+      mref = sess["model"] as { providerID: string; id: string } | undefined;
+    } catch { /* fall back to the default model below */ }
+    try {
       s.modelLabel = mref ? await oc.friendlyModelName(mref) : await oc.getDefaultModelName();
-      s.contextLimit = await oc.modelContextLimit(mref ?? null);
     } catch { /* keep default */ }
+    try {
+      s.contextLimit = await oc.modelContextLimit(mref ?? null);
+    } catch { /* no context window */ }
     void this.refreshContext();
   }
 

@@ -33,6 +33,47 @@ the focused `Textarea` and are mirrored back into state.
 bun test                              # headless frame + input regression
 ```
 
+## Session ownership: ctui sessions are ctui's
+
+ctui runs **its own opencode service instance** against **its own session
+database**, so work you do in ctui is never mixed into the official `opencode`
+install:
+
+```
+ctui     →  opencode2 serve --port 49375   OPENCODE_DB=~/.local/share/ctui/ctui.db
+opencode →  opencode2 serve --port 49374   (default opencode.db, untouched)
+```
+
+A session started in ctui does **not** appear in opencode's session list, and
+vice versa. Both speak the identical opencode API, so every feature works in
+either client.
+
+```bash
+ctui                    # private instance (default)
+CTUI_SHARE_DB=1 ctui    # one-off: talk to the shared opencode service instead
+
+ctui --port 49400                    # different port
+CTUI_DATA_DIR=~/.ctui ctui           # different data directory
+```
+
+Implementation notes (`src/opencode/instance.ts`): opencode v2 keeps sessions in
+one SQLite DB per service process, so a private `OPENCODE_DB` gives real
+ownership. It needs a private *process* too, because `serve --service` is
+single-instance per machine and v2.0.20 ignores `XDG_STATE_HOME` for its
+registration (and doesn't support `OPENCODE_DATA_DIR`/`OPENCODE_APPNAME` at
+all). ctui therefore spawns a plain `serve --port`, which bypasses the service
+registry. The instance is reused across runs and can be cycled with
+`CTUI_SHARE_DB=1 ctui --stop-service` (or just kill the process).
+
+**Starting fresh:** ctui's database begins empty. Your existing opencode
+sessions stay in opencode. To bring them across, stop the ctui instance and copy
+the database:
+
+```bash
+pkill -f "opencode.*serve --port 49375"
+cp ~/.local/share/opencode/opencode.db ~/.local/share/ctui/ctui.db
+```
+
 ## Run
 
 ```bash

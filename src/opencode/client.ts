@@ -1,8 +1,13 @@
 // opencode service client: connection bootstrap and the low-level call
 // surface every other module in this layer sits on.
+//
+// By default ctui talks to its OWN service instance, whose session database is
+// ctui's (see ./instance.ts) — so ctui sessions never appear in the official
+// opencode service. CTUI_SHARE_DB=1 opts into the shared service instead.
 
 import { OpenCode } from "@opencode/client";
 import { Service } from "@opencode/client/service";
+import { ensureInstance, makeClient, sharesOpencodeService } from "./instance";
 
 export type OCClient = ReturnType<typeof OpenCode.make>;
 
@@ -11,6 +16,12 @@ let _client: OCClient | null = null;
 
 export async function getClient(): Promise<OCClient> {
   if (_client) return _client;
+  if (!sharesOpencodeService()) {
+    const inst = await ensureInstance();
+    _endpoint = { url: inst.url };
+    _client = makeClient(inst);
+    return _client;
+  }
   const endpoint = await Service.ensure();
   _endpoint = endpoint as unknown as { url: string };
   _client = OpenCode.make({

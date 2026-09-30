@@ -150,7 +150,11 @@ export async function runUpdate(info: UpdateInfo, bin: string): Promise<UpdateRe
       const [out, err] = await Promise.all([new Response(install.stdout).text(), new Response(install.stderr).text()]);
       const code = await install.exited;
       if (code !== 0) throw new Error((err || out).trim().split("\n").slice(-2).join(" ") || `bun add exited ${code}`);
-      // Restart so the service process actually runs the new binary.
+      // Restart so the service processes actually run the new binary.
+      // ctui owns a private instance (its own session DB) which must be
+      // cycled too; the shared `opencode2 service restart` covers the official
+      // one. Restarting the private instance happens in main.ts after this
+      // returns, once the client cache is dropped.
       const restart = Bun.spawn([bin, "service", "restart"], { stdout: "pipe", stderr: "pipe" });
       await new Response(restart.stdout).text();
       await restart.exited;

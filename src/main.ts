@@ -4,6 +4,7 @@
 
 import { App } from "./app";
 import * as oc from "./opencode";
+import { restartInstance, stopInstance } from "./opencode/instance";
 import { binPath, checkForUpdate, runUpdate } from "./update";
 
 interface Args {
@@ -16,14 +17,16 @@ interface Args {
   print: boolean;
   trust: boolean;
   updateCheck: boolean;
+  stopService: boolean;
 }
 
 function parseArgs(argv: string[]): Args {
-  const a: Args = { prompt: "", mode: null, resume: null, cont: false, model: null, workspace: process.cwd(), print: false, trust: false, updateCheck: process.env.CTUI_NO_UPDATE_CHECK !== "1" };
+  const a: Args = { prompt: "", mode: null, resume: null, cont: false, model: null, workspace: process.cwd(), print: false, trust: false, updateCheck: process.env.CTUI_NO_UPDATE_CHECK !== "1", stopService: false };
   const rest: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i];
     if (t === "-p" || t === "--print") a.print = true;
+    else if (t === "--stop-service") a.stopService = true;
     else if (t === "--no-update-check") a.updateCheck = false;
     else if (t === "--mode" && argv[i + 1]) { const m = argv[++i]; if (m === "plan" || m === "ask") a.mode = m; }
     else if (t === "--plan") a.mode = "plan";
@@ -87,7 +90,10 @@ async function maybeUpdateOpencode() {
   if (!bin) return;
   const res = await runUpdate(info, bin);
   if (res.applied) {
-    // The service restarted from the new binary — drop the stale client.
+    // The shared service restarted from the new binary; ctui's own private
+    // instance must be cycled too, then the client cache dropped so we
+    // reconnect (and re-spawn) against the new binary.
+    await restartInstance().catch(() => undefined);
     oc.resetClient();
     await oc.getClient().catch(() => null);
   }
@@ -95,6 +101,13 @@ async function maybeUpdateOpencode() {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+
+  if (args.stopService) {
+    const stopped = await stopInstance();
+    process.stdout.write(stopped ? "ctui service instance stopped.\n" : "no running ctui service instance.\n");
+    process.exit(0);
+  }
+
   if (args.print) {
     await runPrintMode(args);
     process.exit(0);
