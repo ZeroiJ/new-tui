@@ -3,6 +3,9 @@
 // everything visual in ./ui/*.
 
 import type { Key } from "./key";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { commandList } from "./commands";
 import { runSlash } from "./slash";
 import { createState, freezeToolTimers, type UIState, type SessionItem } from "./state";
@@ -35,6 +38,8 @@ export class App {
   private cleanup: () => void = () => {};
   /** OpenTUI shell — the frame engine and input source */
   private shell: OtuiShell | null = null;
+  /** prompt captured by the last /undo, replayed by /redo */
+  private undonePrompt: string | null = null;
 
   constructor(opts: AppOptions) {
     this.opts = opts;
@@ -852,6 +857,115 @@ export class App {
       });
       this.adoptShellSize();
       this.draw();
+    }
+  }
+
+  // ----- Tier 1: undo/redo, worktrees, export --------------------------
+
+  /** opencode project id for the current session (worktrees are per-project). */
+  async projectID(): Promise<string> {
+    try {
+      const sess = (await oc.getSession(this.sessionID)) as Record<string, unknown>;
+      return String(sess["projectID"] ?? "");
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Revert the conversation to before the last user message, restoring files.
+   * opencode v2 has no server-side unrevert, so we keep the undone prompt
+   * ourselves so /redo can re-run it.
+   */
+  async undoLastTurn(): Promise<string | null> {
+    const s = this.s;
+    if (s.streaming) {
+      s.transcript.push({ role: "error", text: "Wait for the current turn to finish before undoing." });
+      return null;
+    }
+    try {
+      const msgs = await oc.listMessages(this.sessionID);
+      // The server returns messages newest-first, so the first user message we
+      // meet is the most recent turn to undo.
+      const lastUser = msgs.find((m) => m.role.startsWith("user") && m.text.trim());
+      if (!lastUser) {
+        s.transcript.push({ role: "error", text: "Nothing to undo — no user message yet." });
+        return null;
+      }
+      const prompt = lastUser.text.trim();
+      this.undonePrompt = prompt;
+      const res = await oc.revertToMessage(this.sessionID, lastUser.id, true);
+      // Reload the (now shorter) history and re-home the workspace state.
+      s.transcript = [];
+      s.messages.clear();
+      s.parts.clear();
+      s.scrollOffset = 0;
+      s.followUp = false;
+      s.toolLineById.clear();
+      s.toolNameById.clear();
+      await this.loadHistory();
+      const fileNote = res.files.length
+        ? `, restored ${res.files.length} file${res.files.length === 1 ? "" : "s"}`
+        : "";
+      s.transcript.push({
+        role: "system",
+        text: `Undid last turn${fileNote}.\nReverted: ${prompt.slice(0, 120)}${prompt.length > 120 ? "…" : ""}\n/redo re-runs it.`,
+      });
+      this.draw();
+      return prompt;
+    } catch (e) {
+      s.transcript.push({ role: "error", text: `Undo failed: ${String(e)}` });
+      return null;
+    }
+  }
+
+  takeUndonePrompt(): string | null {
+    const p = this.undonePrompt;
+    this.undonePrompt = null;
+    return p;
+  }
+
+  /** Create an isolated git worktree and switch into a fresh session in it. */
+  async createWorktreeSession(name: string): Promise<string | null> {
+    const s = this.s;
+    const pid = await this.projectID();
+    if (!pid) {
+      s.transcript.push({ role: "error", text: "Could not resolve the opencode project id for a worktree." });
+      return null;
+    }
+    try {
+      const tree = await oc.createWorktree(pid, name);
+      if (!tree.directory) {
+        s.transcript.push({ role: "error", text: "Worktree creation returned no directory." });
+        return null;
+      }
+      const created = await oc.createSession(tree.directory, `worktree: ${name}`);
+      const id = String(created["id"] ?? "");
+      s.cwd = tree.directory;
+      await this.switchSession(id);
+      s.transcript.push({ role: "system", text: `Worktree ready — new session in ${tree.directory}` });
+      this.draw();
+      return tree.directory;
+    } catch (e) {
+      s.transcript.push({ role: "error", text: `Worktree failed: ${String(e)}` });
+      return null;
+    }
+  }
+
+  /** Write the full conversation export to ctui's data dir; returns the path. */
+  async exportConversation(): Promise<string | null> {
+    try {
+      const data = await oc.exportSession(this.sessionID);
+      const dir = join(process.env.CTUI_DATA_DIR ?? join(homedir(), ".local", "share", "ctui"), "exports");
+      mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const path = join(dir, `${this.sessionID}-${stamp}.json`);
+      writeFileSync(path, JSON.stringify(data, null, 2));
+      return path;
+    } catch (e) {
+      this.s.statusMsg = `export failed: ${String(e).slice(0, 60)}`;
+      this.draw();
+      return null;
     }
   }
 

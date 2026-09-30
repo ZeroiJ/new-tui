@@ -97,6 +97,62 @@ export async function runSlash(app: App, cmd: string, arg: string): Promise<stri
       return id;
     }
 
+    case "/undo": {
+      const undone = await app.undoLastTurn();
+      if (!undone) {
+        s.transcript.push({ role: "error", text: "Nothing to undo in this session." });
+        return null;
+      }
+      return null;
+    }
+
+    case "/redo": {
+      const prompt = app.takeUndonePrompt();
+      if (!prompt) {
+        s.transcript.push({ role: "error", text: "Nothing to redo. (opencode v2 has no server-side unrevert — /redo re-runs the last undone prompt.)" });
+        return null;
+      }
+      s.transcript.push({ role: "system", text: `Re-running: ${prompt.slice(0, 80)}` });
+      await app.submit(sid(), prompt);
+      return null;
+    }
+
+    case "/worktree": {
+      if (!arg) {
+        const trees = await oc.listWorktrees(await app.projectID());
+        const rows = trees.length
+          ? trees.map((w) => `${w.directory}  (${w.strategy ?? "worktree"})`).join("\n")
+          : "(no worktrees yet)";
+        s.transcript.push({ role: "assistant", text: `Git worktrees:\n${rows}\n\nUse /worktree <name> to create one and start a session inside it.` });
+        return null;
+      }
+      // createWorktreeSession reports its own status and switches sessions
+      await app.createWorktreeSession(arg);
+      return null;
+    }
+
+    case "/export": {
+      const path = await app.exportConversation();
+      s.transcript.push({ role: "system", text: path ? `Conversation exported → ${path}` : "Export failed." });
+      return null;
+    }
+
+    case "/stats": {
+      const st = await oc.usageStats();
+      const n = (v: number) => (v ?? 0).toLocaleString("en-US");
+      const lines = [
+        `Sessions      ${n(st.sessions)}${st.subagents ? ` (+${n(st.subagents)} subagents)` : ""}`,
+        `Prompts       ${n(st.prompts)}`,
+        `Steps         ${n(st.steps)}`,
+        `Input tokens  ${n(st.tokens?.input ?? 0)}`,
+        `Output tokens ${n(st.tokens?.output ?? 0)}`,
+        `Cache read    ${n(st.tokens?.cache?.read ?? 0)}`,
+        st.cost != null ? `Cost          $${st.cost.toFixed(4)}` : "",
+      ].filter(Boolean);
+      s.transcript.push({ role: "assistant", text: `Usage (all sessions):\n${lines.join("\n")}` });
+      return null;
+    }
+
     case "/plan":
       s.mode = "plan";
       if (arg) await app.submit(sid(), `[PLAN MODE - design approach, ask clarifying questions, no edits]\n${arg}`);

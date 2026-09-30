@@ -216,9 +216,28 @@ re-implementations of the same motion — same cycle durations from their
 ## Slash commands
 
 `/model`, `/agent`, `/plan`, `/ask`, `/compact`, `/fork`, `/new`, `/sessions`,
-`/ls`, `/resume`, `/clear`, `/goal`, `/add-dir`, `/mcp`, `/sandbox`,
+`/ls`, `/resume`, `/undo`, `/redo`, `/worktree`, `/export`, `/stats`,
+`/clear`, `/goal`, `/add-dir`, `/mcp`, `/sandbox`,
 `/run-everything` (auto-approve toggle), `/auto-review`, `/spinner`,
 `/notify` (desktop notification on turn completion), `/diff`, `/help`, `/quit`
+
+### Undo / redo
+
+`/undo` reverts the last turn — the conversation goes back to before your most
+recent prompt and the files the agent changed are restored. It uses opencode's
+`session.revert` (stage → commit) and reports what it reverted.
+
+`/redo` re-runs the last undone prompt. Note: opencode v2 has no server-side
+"unrevert", so a redo is a re-run of the prompt, not a restoration of the
+original answer.
+
+### Worktrees
+
+`/worktree` lists the project's git worktrees; `/worktree <name>` creates one and
+starts a fresh session inside it, so a second agent can work on the same repo
+without disturbing your current working tree. Worktrees live in opencode's
+`worktree/` directory (shared with the official install — only session data is
+ctui-private).
 
 ### Sessions are project-scoped
 
